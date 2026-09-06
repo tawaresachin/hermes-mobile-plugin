@@ -2,17 +2,29 @@
 
 Generates QR codes for Hermes Mobile App to connect directly to Hermes Agent Desktop gateway (port 8642).
 
-## One-Command Installation
+## Installation
 
+### From Local Source
 ```bash
-# Full setup: install + QR + 24x7 supervisor
+# Clone the repository
+git clone https://github.com/<your-username>/hermes-mobile-plugin.git
+cd hermes-mobile-plugin
+pip install -e .
+
+# Then run the one-command setup
 hermes-mobile-plugin install
 ```
 
-This single command:
-1. Installs plugin files to `~/.hermes/plugins/hermes-mobile-qr/`
-2. Generates QR code with connection details
-3. Starts 24x7 gateway supervisor (restarts gateway if it crashes)
+### Directly from GitHub (without cloning)
+```bash
+# Install the plugin directly from GitHub
+pip install git+https://github.com/<your-username>/hermes-mobile-plugin@v0.0.1
+
+# Then run the one-command setup
+hermes-mobile-plugin install
+```
+
+> Replace `<your-username>` with your GitHub username or the repository owner.
 
 ## Usage
 
@@ -44,7 +56,6 @@ hermes-mobile-plugin supervisor --stop  # Stop
 5. Starts 24x7 gateway supervisor to keep gateway online
 
 ## QR Code Contains
-
 ```json
 {
   "url": "http://100.89.25.56:8642",
@@ -56,14 +67,12 @@ hermes-mobile-plugin supervisor --stop  # Stop
 ```
 
 ## Mobile App Setup
-
 1. Install Hermes Mobile APK (from GitHub releases)
 2. Open app → Settings → Scan QR Code
 3. Scan QR from your browser
 4. App auto-configures and connects to Hermes Agent Desktop gateway
 
 ## Gateway Supervisor (24x7 Monitoring)
-
 The supervisor ensures your Hermes Gateway stays online:
 - Checks health every 10 seconds
 - Restarts gateway after 3 consecutive failures
@@ -86,14 +95,12 @@ hermes-mobile-plugin supervisor
 ```
 
 ## Requirements
-
 - Python 3.10+
 - Hermes Agent 0.20.0+ (installed separately from https://hermes-agent.nousresearch.com)
 - Tailscale (optional, for cross-network connections)
 - Hermes Mobile APK (separate download)
 
 ## Development
-
 ```bash
 # Install from source
 pip install -e .
