@@ -1,0 +1,15 @@
+name: hermes-mobile-qr
+version: "0.0.1"
+description: |
+  Generates QR code for Hermes Mobile App to connect directly to Hermes Agent Desktop gateway (port 8642).
+  Auto-detects Tailscale IP, reads API key and context compression from config.
+author: Hermes Mobile Team
+license: MIT
+homepage: https://github.com/hermes-agent/hermes-mobile-plugin
+hermes_min_version: "0.20.0"
+cli_commands:
+  - hermes-mobile-qr
+  - hermes-mobile-install
+hooks:
+  - startup
+entry_point: hermes_mobile_plugin:HermesMobileQRPlugin

@@ -1,0 +1,43 @@
+# Byte-compiled / optimized / DLL files
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Distribution / packaging
+dist/
+build/
+*.egg-info/
+.eggs/
+
+# Installer outputs
+*.whl
+*.tar.gz
+
+# Environment
+.env
+.venv
+venv/
+env/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Plugin generated
+*.html
+qr_code.html
+
+# Test
+.coverage
+.pytest_cache/
+htmlcov/
+
+# Type checking
+.mypy_cache/
+.ruff_cache/
