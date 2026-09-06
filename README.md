@@ -58,13 +58,15 @@ hermes-mobile-plugin supervisor --stop  # Stop
 ## QR Code Contains
 ```json
 {
-  "url": "http://100.89.25.56:8642",
-  "api_key": "hermes-mobile-d5a8f8ad9d7e45b1e7000e5f9ec424f41180a54791ea5b1ea06013f40b0a3f27",
+  "url": "http://<your-tailscale-ip>:8642",
+  "api_key": "<your-api-key>",
   "context_compression": true,
-  "tailscale_ip": "100.89.25.56",
+  "tailscale_ip": "<your-tailscale-ip>",
   "version": "0.0.1"
 }
 ```
+
+> The actual values are read from your Hermes Agent configuration (`~/.hermes/config.yaml`).
 
 ## Mobile App Setup
 1. Install Hermes Mobile APK (from GitHub releases)
