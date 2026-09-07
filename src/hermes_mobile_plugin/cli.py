@@ -136,6 +136,7 @@ def cmd_qr(args: argparse.Namespace) -> int:
             output_dir=output_dir,
             open_browser=not args.no_browser,
             save_file=True,
+            ip_override=args.ip,
         ))
 
         print_connection_details(config)
@@ -266,6 +267,10 @@ Examples:
     qr_parser.add_argument(
         "--output",
         help="Custom output path for HTML file",
+    )
+    qr_parser.add_argument(
+        "--ip",
+        help="Override IP address (e.g., Tailscale IP when Tailscale is not running)",
     )
 
     # Status command

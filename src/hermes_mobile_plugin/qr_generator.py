@@ -32,11 +32,12 @@ class QRConfigError(Exception):
     pass
 
 
-def build_connection_config(config: dict) -> dict:
+def build_connection_config(config: dict, ip_override: Optional[str] = None) -> dict:
     """Build connection configuration from Hermes config.
 
     Args:
         config: Hermes Agent configuration dictionary.
+        ip_override: Force a specific IP address (e.g., Tailscale IP).
 
     Returns:
         Dictionary with connection details for QR code.
@@ -57,8 +58,12 @@ def build_connection_config(config: dict) -> dict:
     if not api_key:
         logger.warning("No API key configured - mobile app will fail to authenticate")
 
-    # Detect IP
-    ip = get_tailscale_ip()
+    # Detect IP (or use override)
+    if ip_override:
+        ip = ip_override
+        logger.debug("Using overridden IP: %s", ip)
+    else:
+        ip = get_tailscale_ip()
 
     # Read compression preference
     compression_enabled = config.get("compression", {}).get("enabled", True)
@@ -89,7 +94,7 @@ def generate_qr_svg(data: dict) -> str:
             "qrcode library not found. Install with: pip install qrcode"
         )
 
-    qr_json = json.dumps(data, separators=(",", ":"))
+    qr_json = f"hermes://connect?url={data['url']}&key={data['api_key']}"
 
     qr = qrcode.QRCode(
         version=1,
@@ -178,7 +183,8 @@ def get_html_template(qr_svg: str, data: dict) -> str:
 
 
 async def generate_qr(config: Optional[dict] = None, output_dir: Optional[Path] = None,
-                      open_browser: bool = True, save_file: bool = True) -> Path:
+                      open_browser: bool = True, save_file: bool = True,
+                      ip_override: Optional[str] = None) -> Path:
     """Generate QR code for Hermes Mobile connection.
 
     Args:
@@ -186,6 +192,7 @@ async def generate_qr(config: Optional[dict] = None, output_dir: Optional[Path] 
         output_dir: Directory to save HTML file. Defaults to plugin directory.
         open_browser: Whether to open browser after generating.
         save_file: Whether to save HTML file.
+        ip_override: Force a specific IP address.
 
     Returns:
         Path to generated HTML file.
@@ -198,11 +205,11 @@ async def generate_qr(config: Optional[dict] = None, output_dir: Optional[Path] 
 
     if output_dir is None:
         output_dir = Path.home() / ".hermes" / "plugins" / "hermes-mobile-qr"
-    
+
     output_dir.mkdir(parents=True, exist_ok=True)
 
     # Build connection config
-    data = build_connection_config(config)
+    data = build_connection_config(config, ip_override=ip_override)
 
     # Generate QR SVG
     qr_svg = generate_qr_svg(data)

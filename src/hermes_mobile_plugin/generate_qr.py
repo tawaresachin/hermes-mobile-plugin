@@ -103,7 +103,7 @@ def generate_qr_code(data: dict) -> str:
     if qrcode is None:
         raise ImportError("qrcode library not found. Install with: pip install qrcode")
 
-    qr_json = json.dumps(data)
+    qr_json = f"hermes://connect?url={data['url']}&key={data['api_key']}"
     qr = qrcode.QRCode(
         version=1,
         error_correction=qrcode.constants.ERROR_CORRECT_L,
