@@ -5,7 +5,7 @@ from typing import Final
 
 # Plugin metadata
 PLUGIN_NAME: Final[str] = "hermes-mobile-qr"
-PLUGIN_VERSION: Final[str] = "0.0.1"
+PLUGIN_VERSION: Final[str] = "0.0.2"
 PACKAGE_NAME: Final[str] = "hermes-mobile-plugin"
 
 # Gateway configuration
