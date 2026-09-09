@@ -5,7 +5,7 @@ from typing import Final
 
 # Plugin metadata
 PLUGIN_NAME: Final[str] = "hermes-mobile-qr"
-PLUGIN_VERSION: Final[str] = "0.0.2"
+PLUGIN_VERSION: Final[str] = "0.0.3"
 PACKAGE_NAME: Final[str] = "hermes-mobile-plugin"
 
 # Gateway configuration
@@ -27,6 +27,9 @@ LOGS_DIR: Final[Path] = HERMES_HOME / "logs"
 SUPERVISOR_LOG_FILE: Final[Path] = LOGS_DIR / "gateway_supervisor.log"
 SUPERVISOR_PID_FILE: Final[Path] = LOGS_DIR / "gateway_supervisor.pid"
 QR_HTML_FILE: Final[str] = "qr_code.html"
+
+# Attachment uploads served to the mobile app
+UPLOADS_DIR: Final[Path] = HERMES_HOME / "mobile-uploads"
 
 # Tailscale configuration
 TAILSCALE_IP_PREFIX: Final[str] = "100."

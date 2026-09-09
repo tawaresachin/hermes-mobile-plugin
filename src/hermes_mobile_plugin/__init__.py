@@ -41,7 +41,6 @@ class HermesMobileQRPlugin:
         self.config = config
         self.plugin_dir = plugin_dir
         self._qr_generated = False
-        self._supervisor_thread: Optional[threading.Thread] = None
 
     async def startup(self) -> None:
         """Called when Hermes Agent starts up (legacy entry-point style)."""
@@ -69,23 +68,12 @@ class HermesMobileQRPlugin:
             self._qr_generated = True
             logger.info("[Hermes Mobile QR] QR code generated successfully")
 
-            from .supervisor import GatewaySupervisor
-            self._supervisor_thread = threading.Thread(
-                target=self._run_supervisor,
-                daemon=True,
-                name="gateway-supervisor",
-            )
-            self._supervisor_thread.start()
-            logger.info("[Hermes Mobile QR] Gateway supervisor started (daemon thread)")
+            from .supervisor import ensure_running
+            ensure_running()
+            logger.info("[Hermes Mobile QR] Gateway watchdog verified/spawned")
 
         except Exception as e:
             logger.warning("[Hermes Mobile QR] Failed to initialize: %s", e)
-
-    def _run_supervisor(self) -> None:
-        from .supervisor import GatewaySupervisor
-        supervisor = GatewaySupervisor()
-        supervisor.run()
-
 
 # ---------------------------------------------------------------------------
 # Standard plugin entry point (register(ctx))
@@ -109,9 +97,10 @@ def _wire_audio_routes(native: Any, adapter: Any) -> None:
             return
         try:
             from .audio_routes import register as _register_routes
+            from .system_routes import register as _register_system_routes
         except Exception as exc:
             logger.warning(
-                "[hermes-mobile-qr] Could not import audio_routes: %s", exc
+                "[hermes-mobile-qr] Could not import route modules: %s", exc
             )
             return
         if native is None:
@@ -122,6 +111,7 @@ def _wire_audio_routes(native: Any, adapter: Any) -> None:
             return
         try:
             _register_routes(native)
+            _register_system_routes(native)
         except Exception as exc:
             logger.exception(
                 "[hermes-mobile-qr] Failed to register audio routes: %s", exc
@@ -131,22 +121,28 @@ def _wire_audio_routes(native: Any, adapter: Any) -> None:
 
 
 async def _maybe_generate_qr(ctx: Any) -> None:
-    """Best-effort QR generation on startup, mirroring the legacy flow."""
+    """Best-effort QR generation on startup, mirroring the legacy flow.
+
+    ``PluginContext`` exposes no ``.config``/``.plugin_dir`` attributes — the
+    QR payload needs the REAL platforms.api_server config, so load it from
+    config.yaml directly, and write the HTML next to the plugin package
+    (never the gateway's CWD).
+    """
     try:
-        from .config import get_plugin_config
-        plugin_config = get_plugin_config(ctx.config if hasattr(ctx, "config") else {})
+        from .config import load_hermes_config, get_plugin_config
+        hermes_config = load_hermes_config()
+        plugin_config = get_plugin_config(hermes_config)
     except ImportError:
-        plugin_config = {}
+        hermes_config, plugin_config = {}, {}
 
     if not plugin_config.get("auto_generate", True):
         return
 
     try:
+        from .constants import PLUGIN_DIR
         from .qr_generator import generate_qr
-        await generate_qr(
-            getattr(ctx, "config", {}),
-            Path(getattr(ctx, "plugin_dir", Path("."))),
-        )
+        out_dir = Path(ctx.plugin_dir) if getattr(ctx, "plugin_dir", None) else PLUGIN_DIR
+        await generate_qr(hermes_config, out_dir)
         logger.info("[Hermes Mobile QR] QR code generated via register(ctx)")
     except Exception as exc:
         logger.warning("[Hermes Mobile QR] QR generation skipped: %s", exc)
@@ -169,6 +165,15 @@ def register(ctx: Any) -> None:
         logger.warning(
             "[Hermes Mobile QR] Could not register api_server handler: %s", exc
         )
+
+    # Keep-alive: spawn the detached gateway watchdog. It lives OUTSIDE the
+    # gateway process, so if the gateway dies (crash, OOM, reboot script) it
+    # restarts it and the app reconnects. Idempotent via PID file.
+    try:
+        from .supervisor import ensure_running
+        ensure_running()
+    except Exception as exc:
+        logger.warning("[Hermes Mobile QR] Watchdog spawn failed: %s", exc)
 
     # Fire-and-forget QR generation so we don't block loader.
     try:

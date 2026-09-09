@@ -6,6 +6,7 @@ Runs as a daemon process 24/7.
 
 import logging
 import os
+import shutil
 import socket
 import subprocess
 import sys
@@ -19,6 +20,7 @@ from .constants import (
     LOGS_DIR,
     SUPERVISOR_CHECK_INTERVAL,
     SUPERVISOR_FAILURE_THRESHOLD,
+    SUPERVISOR_LOG_FILE,
     SUPERVISOR_PID_FILE,
     SUPERVISOR_RESTART_DELAY,
 )
@@ -60,28 +62,29 @@ class GatewaySupervisor:
         logger.warning("Gateway is down. Attempting restart...")
 
         try:
+            hermes_bin = shutil.which("hermes")
+            if not hermes_bin:
+                # Fallback: the venv this plugin runs from usually has the launcher.
+                candidate = Path(sys.executable).parent / "hermes"
+                hermes_bin = str(candidate) if candidate.exists() else None
+            if not hermes_bin:
+                logger.error("Cannot restart gateway: 'hermes' not found on PATH")
+                return False
+
             # Stop existing gateway
             subprocess.run(
-                ["hermes", "gateway", "stop"],
+                [hermes_bin, "gateway", "stop"],
                 timeout=10,
                 capture_output=True,
             )
             time.sleep(2)
 
-            # Start new gateway
-            env = os.environ.copy()
-            env["PATH"] = (
-                "/data/data/com.termux/files/home/.hermes/hermes-agent/venv/bin:"
-                "/data/data/com.termux/files/usr/bin:"
-                "/data/data/com.termux/files/home/.cargo/bin:"
-                "/usr/bin:/bin"
-            )
+            # Start new gateway detached from this process group.
             proc = subprocess.Popen(
-                ["hermes", "gateway"],
+                [hermes_bin, "gateway", "run"],
                 stdout=subprocess.DEVNULL,
                 stderr=subprocess.DEVNULL,
                 start_new_session=True,
-                env=env,
             )
             logger.info("Spawned gateway process (PID: %s)", proc.pid)
             return True
@@ -111,12 +114,14 @@ class GatewaySupervisor:
         logger.info("Gateway supervisor started (port %s)", self.port)
         consecutive_failures = 0
 
+        failed_restarts = 0
         try:
             while self._running:
                 if self.is_gateway_alive():
                     if consecutive_failures > 0:
                         logger.info("Gateway is healthy again")
                     consecutive_failures = 0
+                    failed_restarts = 0
                 else:
                     consecutive_failures += 1
                     logger.warning(
@@ -126,13 +131,28 @@ class GatewaySupervisor:
                     )
 
                     if consecutive_failures >= SUPERVISOR_FAILURE_THRESHOLD:
+                        if shutil.which("hermes") is None and not (
+                            Path(sys.executable).parent / "hermes"
+                        ).exists():
+                            # Hermes Agent is gone — nothing to supervise.
+                            logger.error(
+                                "hermes binary not found; supervisor exiting"
+                            )
+                            break
                         if self.restart_gateway():
                             consecutive_failures = 0
-                            logger.info(
-                                "Waiting %ss for gateway to stabilize...",
-                                SUPERVISOR_RESTART_DELAY,
+                            failed_restarts += 1
+                            # Escalating backoff: a gateway that crash-loops
+                            # (bad config) must not be hammered every 30s.
+                            delay = (
+                                SUPERVISOR_RESTART_DELAY
+                                if failed_restarts < 5
+                                else SUPERVISOR_RESTART_DELAY * 10
                             )
-                            time.sleep(SUPERVISOR_RESTART_DELAY)
+                            logger.info(
+                                "Waiting %ss for gateway to stabilize...", delay
+                            )
+                            time.sleep(delay)
                             continue
 
                 time.sleep(SUPERVISOR_CHECK_INTERVAL)
@@ -198,11 +218,67 @@ def start_daemon() -> int:
     return 0
 
 
+def is_supervisor_running() -> bool:
+    """True if a supervisor daemon is alive (per PID file)."""
+    if not SUPERVISOR_PID_FILE.exists():
+        return False
+    try:
+        pid = int(SUPERVISOR_PID_FILE.read_text().strip())
+        os.kill(pid, 0)
+        return True
+    except (ProcessLookupError, ValueError, OSError):
+        SUPERVISOR_PID_FILE.unlink(missing_ok=True)
+        return False
+
+
+def ensure_running() -> int:
+    """Spawn the detached gateway watchdog if not already running.
+
+    Safe to call from inside the gateway (plugin register/startup): the
+    child is fully detached (new session, own stdio), so it survives the
+    gateway dying and can bring it back. Idempotent via the PID file.
+
+    Returns the supervisor PID, or -1 on failure.
+    """
+    if is_supervisor_running():
+        return int(SUPERVISOR_PID_FILE.read_text().strip())
+
+    try:
+        LOGS_DIR.mkdir(parents=True, exist_ok=True)
+        log_file = open(SUPERVISOR_LOG_FILE, "a", encoding="utf-8")
+        # Re-exec this module as __main__ with the plugin's own src dir on
+        # PYTHONPATH (the package lives in ~/.hermes/plugins, not site-packages).
+        pkg_root = Path(__file__).resolve().parent   # .../hermes_mobile_plugin
+        env = dict(os.environ)
+        env["PYTHONPATH"] = (
+            str(pkg_root.parent)
+            + (os.pathsep + env["PYTHONPATH"] if env.get("PYTHONPATH") else "")
+        )
+        proc = subprocess.Popen(
+            [sys.executable, "-m", "hermes_mobile_plugin.supervisor"],
+            stdin=subprocess.DEVNULL,
+            stdout=log_file,
+            stderr=log_file,
+            cwd="/",
+            env=env,
+            start_new_session=True,
+            close_fds=True,
+        )
+        logger.info("Spawned gateway watchdog (PID %s)", proc.pid)
+        return proc.pid
+    except Exception as e:  # noqa: BLE001 - watchdog spawn must never break the gateway
+        logger.error("Failed to spawn gateway watchdog: %s", e)
+        return -1
+
+
+def run_foreground() -> None:
+    """Daemon main: single-instance guard, PID file, then the supervise loop."""
+    if is_supervisor_running():
+        return
+    supervisor = GatewaySupervisor()
+    supervisor.run()
+
+
 if __name__ == "__main__":
-    daemon_pid = start_daemon()
-    if daemon_pid > 0:
-        print(f"Gateway supervisor started as daemon (PID: {daemon_pid})")
-        print(f"Logs: {LOGS_DIR / 'gateway_supervisor.log'}")
-    else:
-        print("Failed to start supervisor")
-        sys.exit(1)
+    # Launched detached by ensure_running(): stdio already wired to the log.
+    run_foreground()

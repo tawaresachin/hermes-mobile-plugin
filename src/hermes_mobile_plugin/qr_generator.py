@@ -1,6 +1,7 @@
 """QR code generation for Hermes Mobile App connection."""
 
 import json
+from urllib.parse import quote
 import logging
 import webbrowser
 from pathlib import Path
@@ -94,7 +95,12 @@ def generate_qr_svg(data: dict) -> str:
             "qrcode library not found. Install with: pip install qrcode"
         )
 
-    qr_json = f"hermes://connect?url={data['url']}&key={data['api_key']}"
+    # URI-scheme payload; both values percent-encoded so special characters
+    # (e.g. a key containing '&') cannot corrupt the query parse on the phone.
+    qr_uri = "hermes://connect?url={}&key={}".format(
+        quote(str(data["url"]), safe=""),
+        quote(str(data["api_key"]), safe=""),
+    )
 
     qr = qrcode.QRCode(
         version=1,
@@ -102,7 +108,7 @@ def generate_qr_svg(data: dict) -> str:
         box_size=QR_BOX_SIZE,
         border=QR_BORDER,
     )
-    qr.add_data(qr_json)
+    qr.add_data(qr_uri)
     qr.make(fit=True)
 
     img = qr.make_image(image_factory=SvgPathImage)

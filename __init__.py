@@ -1,31 +1,20 @@
+"""Hermes Mobile QR + Voice plugin package.
+
+The standard plugin loader (``hermes_cli.plugins.PluginManager._load_plugin``)
+imports this package's ``__init__.py`` and looks for a ``register(ctx)``
+function. The real implementation lives in
+``hermes_mobile_plugin/__init__.py`` — we forward both entry points
+(``register`` and ``create_plugin``) so the modern register(ctx) path
+and the legacy class-based entry point both work.
+
+The except branch covers the flat layout (installed plugin dir, or this
+repo root imported as a namespace-less module by pytest) where the inner
+``hermes_mobile_plugin`` package is importable from sys.path instead.
 """
-hermes-mobile plugin for Hermes Agent.
 
-This plugin registers hooks and provides the mobile API endpoints
-via the dashboard plugin system.
-"""
+try:
+    from .hermes_mobile_plugin import register, create_plugin, PLUGIN_VERSION  # noqa: F401
+except ImportError:  # flat import context
+    from hermes_mobile_plugin import register, create_plugin, PLUGIN_VERSION  # noqa: F401
 
-from __future__ import annotations
-
-import logging
-
-logger = logging.getLogger(__name__)
-
-
-def register(ctx) -> None:
-    """Register plugin with Hermes Agent."""
-    logger.info("hermes-mobile plugin registered")
-    
-    # Hook: app_startup - initialize background tasks
-    @ctx.hook("app_startup")
-    async def on_startup() -> None:
-        logger.info("hermes-mobile: startup hook")
-        # Could start background cleanup tasks here
-    
-    # Hook: app_shutdown - cleanup
-    @ctx.hook("app_shutdown")
-    async def on_shutdown() -> None:
-        logger.info("hermes-mobile: shutdown hook")
-
-
-__all__ = ["register"]
+__all__ = ["register", "create_plugin", "PLUGIN_VERSION"]

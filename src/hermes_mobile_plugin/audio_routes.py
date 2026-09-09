@@ -1,12 +1,17 @@
-"""aiohttp routes for STT/TTS, registered into the api_server platform.
+"""aiohttp routes for STT/TTS + attachment upload, registered into the api_server platform.
 
-Endpoints:
-  POST /api/audio/transcribe   {audio_b64, mime_type, profile?}  -> {text}
-  POST /api/audio/speak        {text, profile?}                    -> {data_url, mime_type, provider}
-  GET  /api/audio/health                                          -> {ok, stt_available, tts_available}
+Endpoints (all require the gateway's Bearer API key):
+  POST /api/audio/transcribe   {audio_b64, mime_type, profile?, model?}  -> {text}
+  POST /api/audio/speak        {text, profile?}                          -> {data_url, mime_type, provider}
+  GET  /api/audio/health                                                -> {ok, stt_available, tts_available, providers, plugin_version}
+  POST /api/audio/upload       multipart form (file[, session_id])      -> {url}
+  GET  /api/audio/download/{session_id}/{filename}                      -> file bytes
+  DELETE /api/audio/files/{session_id}/{filename}                       -> {ok}
 
-Both reuse ``hermes_mobile_plugin.audio`` (which wraps hermes-agent's
-``transcribe_recording`` and ``text_to_speech_tool``).
+Both audio actions reuse ``hermes_mobile_plugin.audio`` (which wraps hermes-agent's
+``transcribe_recording`` and ``text_to_speech_tool``). Uploads land under
+``$HERMES_HOME/mobile-uploads/<session_id>/`` and are served back for the
+mobile chat's attachment bubbles.
 
 Mounted via ``ctx.register_platform_handler("api_server", _wire)`` in
 ``__init__.register(ctx)``.
@@ -15,16 +20,92 @@ Mounted via ``ctx.register_platform_handler("api_server", _wire)`` in
 from __future__ import annotations
 
 import base64
+import functools
 import json
 import logging
+import mimetypes
+import re
+import secrets
 import time
+from pathlib import Path
 from typing import Any, Optional
 
 from aiohttp import web
+from aiohttp.multipart import BodyPartReader
 
 from .audio import AudioBackendError, transcribe_audio, synthesize_speech
+from .constants import PLUGIN_VERSION, UPLOADS_DIR
 
 logger = logging.getLogger(__name__)
+
+_MAX_UPLOAD_BYTES = 25 * 1024 * 1024  # 25 MB, mirrors transcription limit
+_SAFE_ID_RE = re.compile(r"^[A-Za-z0-9_\-]{1,64}$")  # session ids: api_... / uuid-ish
+_SAFE_NAME_RE = re.compile(r"^[A-Za-z0-9._\-]{1,128}$")  # filenames (no path separators)
+
+
+# ─── Bearer auth (gateway api_server key) ─────────────────────────────
+
+_expected_key_cache: tuple[float, Optional[str]] = (0.0, None)
+_KEY_CACHE_TTL_SECONDS = 60.0
+
+
+def _expected_key() -> Optional[str]:
+    """The api_server platform key from config.yaml, TTL-cached. None when unset."""
+    global _expected_key_cache
+    now = time.monotonic()
+    stamp, value = _expected_key_cache
+    if now - stamp < _KEY_CACHE_TTL_SECONDS:
+        return value
+    key: Optional[str] = None
+    try:
+        from .config import load_hermes_config
+        cfg = load_hermes_config()
+        key = (
+            cfg.get("platforms", {}).get("api_server", {}).get("extra", {}).get("key")
+            or None
+        )
+    except Exception as exc:  # noqa: BLE001 — config read must never 500 a route
+        logger.warning("hermes-mobile-qr: could not read api_server key: %s", exc)
+        return value  # keep the previous cached value for one more cycle
+    _expected_key_cache = (now, key)
+    return key
+
+
+def _authorized(request: web.Request) -> bool:
+    """True when the request carries the gateway Bearer key (or the server has no key)."""
+    expected = _expected_key()
+    if not expected:
+        # No platform key configured: api_server itself runs keyless, so these
+        # routes match its posture rather than inventing a second auth scheme.
+        return True
+    header = request.headers.get("Authorization", "")
+    if header.startswith("Bearer "):
+        import hmac
+        return hmac.compare_digest(header[len("Bearer "):].strip(), expected)
+    return False
+
+
+def _unauthorized() -> web.Response:
+    return web.json_response(
+        {"ok": False, "error": "unauthorized"},
+        status=401,
+        headers={"WWW-Authenticate": "Bearer"},
+    )
+
+
+def require_key(handler: Any) -> Any:
+    """Guard a route with the gateway Bearer key. /api/audio/health stays
+    open on purpose: the mobile app probes it to decide whether voice is
+    available, before/independently of any session, and it exposes no
+    user data. Everything that costs money or touches disk is gated."""
+
+    @functools.wraps(handler)
+    async def _wrapped(request: web.Request) -> web.Response:
+        if not _authorized(request):
+            return _unauthorized()
+        return await handler(request)
+
+    return _wrapped
 
 
 async def _read_json(request: web.Request) -> dict:
@@ -44,6 +125,7 @@ def _json_response(payload: dict, status: int = 200) -> web.Response:
     return web.json_response(payload, status=status)
 
 
+@require_key
 async def _transcribe_route(request: web.Request) -> web.Response:
     """POST /api/audio/transcribe"""
     started = time.monotonic()
@@ -84,6 +166,7 @@ async def _transcribe_route(request: web.Request) -> web.Response:
     )
 
 
+@require_key
 async def _speak_route(request: web.Request) -> web.Response:
     """POST /api/audio/speak"""
     started = time.monotonic()
@@ -128,15 +211,34 @@ async def _speak_route(request: web.Request) -> web.Response:
 
 
 async def _health_route(request: web.Request) -> web.Response:
-    """GET /api/audio/health — mobile app uses this to detect availability."""
+    """GET /api/audio/health — mobile app uses this to detect availability.
+
+    Intentionally unauthenticated: it discloses no user data and the app
+    probes it before/independently of a session. Reports which provider
+    chains actually work so the app can disable unavailable modes instead
+    of failing mid-recording.
+    """
     stt = True
     tts = True
+    stt_provider = None
+    tts_provider = None
+    try:
+        from tools.transcription_tools import _get_provider as _stt_get_provider, _load_stt_config
+        stt_provider = _stt_get_provider(_load_stt_config())
+    except Exception:
+        pass
     try:
         import tools.voice_mode  # noqa: F401
     except ImportError:
         stt = False
     try:
         import tools.tts_tool  # noqa: F401
+        try:
+            from tools.tts_tool import _get_provider as _tts_get_provider
+            from hermes_cli.config import load_config as _load_cfg
+            tts_provider = _tts_get_provider(_load_cfg().get("tts", {}))
+        except Exception:
+            pass
     except ImportError:
         tts = False
 
@@ -145,9 +247,117 @@ async def _health_route(request: web.Request) -> web.Response:
             "ok": stt and tts,
             "stt_available": stt,
             "tts_available": tts,
-            "plugin_version": "0.0.2",
+            "stt_provider": stt_provider,
+            "tts_provider": tts_provider,
+            "plugin_version": PLUGIN_VERSION,
+            "upload": True,
         }
     )
+
+
+# ─── Attachment upload / download ─────────────────────────────────────
+
+@require_key
+async def _upload_route(request: web.Request) -> web.Response:
+    """POST /api/audio/upload — multipart form: file (+ optional session_id).
+
+    Stores under $HERMES_HOME/mobile-uploads/<session_id>/<unique>-<name> and
+    returns a relative download URL the app renders inside message text.
+    """
+    session_id = (request.query.get("session_id") or "").strip()
+    field: Optional[BodyPartReader] = None
+    if request.content_type.startswith("multipart/"):
+        reader = await request.multipart()
+        while True:
+            part = await reader.next()
+            if part is None:
+                break
+            if not isinstance(part, BodyPartReader):
+                continue
+            if part.name == "file":
+                field = part
+                break  # file found; remaining fields are ignored
+            if part.name == "session_id" and not session_id:
+                session_id = ((await part.text()) or "").strip()
+    if field is None:
+        return _json_response({"ok": False, "error": "file field is required"}, status=400)
+
+    if session_id and not _SAFE_ID_RE.match(session_id):
+        return _json_response({"ok": False, "error": "invalid session_id"}, status=400)
+    session_id = session_id or "misc"
+
+    raw_name = Path(field.filename or "upload.bin").name
+    safe_name = re.sub(r"[^A-Za-z0-9._\-]", "_", raw_name)[:120] or "upload.bin"
+    stored = f"{secrets.token_hex(4)}-{safe_name}"
+    if not _SAFE_NAME_RE.match(stored):
+        return _json_response({"ok": False, "error": "invalid filename"}, status=400)
+
+    target_dir = UPLOADS_DIR / session_id
+    target_dir.mkdir(parents=True, exist_ok=True)
+    target = target_dir / stored
+
+    written = 0
+    try:
+        with open(target, "wb") as fh:
+            while True:
+                chunk = await field.read_chunk(64 * 1024)
+                if not chunk:
+                    break
+                written += len(chunk)
+                if written > _MAX_UPLOAD_BYTES:
+                    raise AudioBackendError("file too large (max 25 MB)", status=413)
+                fh.write(chunk)
+    except AudioBackendError as exc:
+        target.unlink(missing_ok=True)
+        return _json_response({"ok": False, "error": str(exc)}, status=exc.status)
+    except Exception as exc:  # noqa: BLE001
+        target.unlink(missing_ok=True)
+        logger.exception("upload failed")
+        return _json_response({"ok": False, "error": f"upload failed: {exc}"}, status=500)
+
+    if written == 0:
+        target.unlink(missing_ok=True)
+        return _json_response({"ok": False, "error": "empty file"}, status=400)
+
+    url = f"/api/audio/download/{session_id}/{stored}"
+    logger.info("mobile upload: %s (%d bytes)", url, written)
+    return _json_response({"ok": True, "url": url, "size": written, "name": safe_name})
+
+
+@require_key
+async def _download_route(request: web.Request) -> web.Response:
+    """GET /api/audio/download/{session_id}/{filename}"""
+    session_id = request.match_info.get("session_id", "")
+    filename = request.match_info.get("filename", "")
+    if not _SAFE_ID_RE.match(session_id) or not _SAFE_NAME_RE.match(filename):
+        return _json_response({"ok": False, "error": "not found"}, status=404)
+    path = (UPLOADS_DIR / session_id / filename).resolve()
+    try:
+        path.relative_to(UPLOADS_DIR.resolve())
+    except ValueError:
+        return _json_response({"ok": False, "error": "not found"}, status=404)
+    if not path.is_file():
+        return _json_response({"ok": False, "error": "not found"}, status=404)
+    ctype = mimetypes.guess_type(path.name)[0] or "application/octet-stream"
+    return web.FileResponse(path, headers={"Content-Type": ctype})
+
+
+@require_key
+async def _delete_route(request: web.Request) -> web.Response:
+    """DELETE /api/audio/files/{session_id}/{filename} — app clears bubbles it deletes."""
+    session_id = request.match_info.get("session_id", "")
+    filename = request.match_info.get("filename", "")
+    if not _SAFE_ID_RE.match(session_id) or not _SAFE_NAME_RE.match(filename):
+        return _json_response({"ok": False, "error": "not found"}, status=404)
+    path = (UPLOADS_DIR / session_id / filename).resolve()
+    try:
+        path.relative_to(UPLOADS_DIR.resolve())
+    except ValueError:
+        return _json_response({"ok": False, "error": "not found"}, status=404)
+    if not path.is_file():
+        return _json_response({"ok": False, "error": "not found"}, status=404)
+    path.unlink(missing_ok=True)
+    return _json_response({"ok": True})
 
 
 def register(native_app: web.Application) -> None:
@@ -155,8 +365,13 @@ def register(native_app: web.Application) -> None:
     native_app.router.add_post("/api/audio/transcribe", _transcribe_route)
     native_app.router.add_post("/api/audio/speak", _speak_route)
     native_app.router.add_get("/api/audio/health", _health_route)
+    native_app.router.add_post("/api/audio/upload", _upload_route)
+    native_app.router.add_get("/api/audio/download/{session_id}/{filename}", _download_route)
+    native_app.router.add_delete("/api/audio/files/{session_id}/{filename}", _delete_route)
     logger.info(
-        "[hermes-mobile-qr v0.0.2] Audio routes registered: "
-        "POST /api/audio/transcribe, POST /api/audio/speak, "
-        "GET /api/audio/health"
+        "[hermes-mobile-qr v%s] Audio routes registered: "
+        "POST /api/audio/transcribe, POST /api/audio/speak, GET /api/audio/health, "
+        "POST /api/audio/upload, GET /api/audio/download/{sid}/{name}, "
+        "DELETE /api/audio/files/{sid}/{name}",
+        PLUGIN_VERSION,
     )

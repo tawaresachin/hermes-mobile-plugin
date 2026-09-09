@@ -1,3 +1,4 @@
+from hermes_mobile_plugin.constants import PLUGIN_VERSION
 """Tests for Hermes Mobile Plugin QR generator module."""
 
 import pytest
@@ -40,7 +41,7 @@ class TestBuildConnectionConfig:
         assert result['api_key'] == 'test-api-key-12345'
         assert result['context_compression'] is True
         assert result['tailscale_ip'] == '100.89.25.56'
-        assert result['version'] == '0.0.1'
+        assert result['version'] == PLUGIN_VERSION
 
     def test_missing_api_key(self):
         """Test config with missing API key."""
@@ -108,7 +109,7 @@ class TestGenerateQRSvg:
             "api_key": "test-key",
             "context_compression": True,
             "tailscale_ip": "100.89.25.56",
-            "version": "0.0.1"
+            "version": PLUGIN_VERSION
         }
         
         svg = generate_qr_svg(data)
@@ -135,7 +136,7 @@ class TestGetHtmlTemplate:
             "api_key": "test-key-12345",
             "context_compression": True,
             "tailscale_ip": "100.89.25.56",
-            "version": "0.0.1"
+            "version": PLUGIN_VERSION
         }
         
         html = get_html_template(qr_svg, data)
@@ -144,7 +145,7 @@ class TestGetHtmlTemplate:
         assert qr_svg in html
         assert "http://100.89.25.56:8642" in html
         assert "Enabled" in html
-        assert "Plugin v0.0.1" in html
+        "Plugin v" + PLUGIN_VERSION in html
 
     def test_missing_api_key_warning(self):
         """Test warning when API key is missing."""
@@ -154,7 +155,7 @@ class TestGetHtmlTemplate:
             "api_key": "",
             "context_compression": False,
             "tailscale_ip": "127.0.0.1",
-            "version": "0.0.1"
+            "version": PLUGIN_VERSION
         }
         
         html = get_html_template(qr_svg, data)
@@ -177,7 +178,7 @@ class TestGenerateQR:
             "api_key": "test-key",
             "context_compression": True,
             "tailscale_ip": "100.89.25.56",
-            "version": "0.0.1"
+            "version": PLUGIN_VERSION
         }
         mock_svg.return_value = "<svg>test</svg>"
         mock_html.return_value = "<html>test</html>"
