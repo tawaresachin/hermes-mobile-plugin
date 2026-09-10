@@ -186,15 +186,107 @@ async def _context_window_route(request: web.Request) -> web.Response:
                            "context_length": total})
 
 
+# ── Live context usage (chat-screen meter) ─────────────────────────────
+# `used` = tokens the NEXT turn of this session will carry: the last turn's
+# prompt_tokens + its reply + the new user message (estimate). Read from
+# state.db (WAL, cheap) so it is accurate even after a server-side
+# compression rotated/compacted the transcript while the app was away.
+
+_CTX_EST_CHARS_PER_TOKEN = 4
+
+
+def _read_state_db_ro():
+    import sqlite3
+    p = HERMES_HOME / "state.db"
+    if not p.exists():
+        return None
+    try:
+        return sqlite3.connect(f"file:{p}?mode=ro", uri=True, timeout=2.0)
+    except sqlite3.Error:
+        return None
+
+
+@require_key
+async def _context_usage_route(request: web.Request) -> web.Response:
+    """GET /api/mobile/context-usage?session_id=X -> {used, total, model, provider}."""
+    sid = (request.query.get("session_id") or "").strip()[:200]
+    if not sid:
+        return _json_response({"ok": False, "error": "session_id is required"}, status=400)
+
+    def _query(sid=sid):
+        db = _read_state_db_ro()
+        if db is None:
+            return None
+        try:
+            row = db.execute(
+                "SELECT model, output_tokens FROM sessions WHERE id = ?",
+                (sid,),
+            ).fetchone()
+            if row is None:
+                # Compression rotates transcripts (new session id). Follow
+                # the parent->child chain (max 8 hops) to the live session.
+                cur, hops = sid, 0
+                while hops < 8:
+                    nxt = db.execute(
+                        "SELECT id FROM sessions WHERE parent_session_id = ? "
+                        "ORDER BY started_at DESC LIMIT 1", (cur,),
+                    ).fetchone()
+                    if not nxt:
+                        break
+                    cur = nxt[0]
+                    hops += 1
+                if cur != sid:
+                    sid = cur
+                    row = db.execute(
+                        "SELECT model, output_tokens FROM sessions WHERE id = ?",
+                        (sid,),
+                    ).fetchone()
+            if row is None:
+                # First-ever turn for an app-declared id: empty history.
+                return {"model": "", "last_prompt": 0, "carry": 0}
+            # LIVE context = token_count over ACTIVE rows only. The
+            # compressor flips superseded history to active=0, so this
+            # sum is exactly what the next turn carries — correct even
+            # mid-compression while the app was closed.
+            used = db.execute(
+                "SELECT COALESCE(SUM(CASE WHEN token_count > 0 THEN token_count "
+                "ELSE LENGTH(COALESCE(content, '')) / 4 END), 0) FROM messages "
+                "WHERE session_id = ? AND active = 1", (sid,),
+            ).fetchone()[0]
+            # The live user turn in flight isn't a row yet; add the system
+            # prompt estimate of the session row when present.
+            sp = db.execute(
+                "SELECT COALESCE(LENGTH(system_prompt), 0) / 4 FROM sessions WHERE id = ?",
+                (sid,),
+            ).fetchone()
+            used = int(used or 0) + int((sp[0] if sp else 0) or 0)
+            return {"model": row[0] or "", "last_prompt": int(used or 0),
+                    "carry": (row[1] or 0)}
+        except sqlite3.Error:
+            return None
+        finally:
+            db.close()
+
+    data = await asyncio.to_thread(_query)
+    if data is None:
+        return _json_response({"ok": False, "error": "session not found"}, status=404)
+    return _json_response({
+        "ok": True, "session_id": sid, "model": data["model"],
+        "last_prompt_tokens": data["last_prompt"], "carry_output_tokens": data["carry"],
+    })
+
+
+
 def register(native_app: web.Application) -> None:
     """Attach system/diag routes to the api_server's web.Application."""
     native_app.router.add_get("/api/system/status", _system_status_route)
     native_app.router.add_post("/api/system/awake", _system_awake_route)
     native_app.router.add_post("/api/diag/log", _diag_route)
     native_app.router.add_get("/api/mobile/context-window", _context_window_route)
+    native_app.router.add_get("/api/mobile/context-usage", _context_usage_route)
     logger.info(
         "[hermes-mobile-qr v%s] system routes registered: GET /api/system/status, "
         "POST /api/system/awake, POST /api/mobile/diag, "
-        "GET /api/mobile/context-window",
+        "GET /api/mobile/context-window, GET /api/mobile/context-usage",
         PLUGIN_VERSION,
     )
