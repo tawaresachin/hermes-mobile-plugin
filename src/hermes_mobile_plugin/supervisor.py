@@ -44,13 +44,27 @@ class GatewaySupervisor:
     def is_gateway_alive(self) -> bool:
         """Check if gateway is responding.
 
+        Primary check uses the HTTP health endpoint; if that fails we fall back to a raw socket connection.
         Returns:
-            True if gateway is healthy, False otherwise.
+            True if gateway reports healthy, False otherwise.
         """
+        # Try HTTP health check first – this works for the default API server.
+        try:
+            import urllib.request
+            with urllib.request.urlopen(GATEWAY_HEALTH_CHECK_URL, timeout=2) as resp:
+                logger.debug("Health check HTTP status %s", resp.status)
+                if resp.status == 200:
+                    return True
+        except Exception as e:
+            logger.debug("Health check failed: %s", e)
+            # HTTP check failed; continue to socket check.
+            pass
+
+        # Fallback: raw TCP socket connection.
         try:
             with socket.create_connection(("127.0.0.1", self.port), timeout=2):
                 return True
-        except (socket.timeout, ConnectionRefusedError, OSError):
+        except Exception:
             return False
 
     def restart_gateway(self) -> bool:
@@ -112,6 +126,8 @@ class GatewaySupervisor:
         self._write_pid()
 
         logger.info("Gateway supervisor started (port %s)", self.port)
+        # Give the gateway a moment to become reachable after startup.
+        time.sleep(SUPERVISOR_CHECK_INTERVAL)
         consecutive_failures = 0
 
         failed_restarts = 0
@@ -153,6 +169,8 @@ class GatewaySupervisor:
                                 "Waiting %ss for gateway to stabilize...", delay
                             )
                             time.sleep(delay)
+                            # Give the freshly started gateway a moment before next health check.
+                            time.sleep(SUPERVISOR_CHECK_INTERVAL)
                             continue
 
                 time.sleep(SUPERVISOR_CHECK_INTERVAL)
