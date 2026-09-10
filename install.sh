@@ -38,11 +38,10 @@ mkdir -p "$PLUGIN_DIR"
 cp -r "$SOURCE_DIR/src/hermes_mobile_plugin" "$PLUGIN_DIR/hermes_mobile_plugin"
 cp "$SOURCE_DIR/plugin.yaml" "$PLUGIN_DIR/"
 
-# Create __init__.py for plugin discovery
-cat > "$PLUGIN_DIR/__init__.py" << 'EOF'
-"""Hermes Mobile QR Plugin - Auto-load entry point."""
-from .hermes_mobile_plugin import create_plugin
-EOF
+# Copy the real __init__.py (forwards BOTH register(ctx) and create_plugin).
+# Do not regenerate a stub here — a stub without register() makes the plugin
+# loader skip it and ALL /api/audio/* routes 404.
+cp "$SOURCE_DIR/__init__.py" "$PLUGIN_DIR/__init__.py"
 
 echo "✅ Plugin installed to $PLUGIN_DIR"
 
