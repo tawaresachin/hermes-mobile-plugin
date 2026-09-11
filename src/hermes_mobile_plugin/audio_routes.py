@@ -321,7 +321,14 @@ async def _upload_route(request: web.Request) -> web.Response:
 
     url = f"/api/audio/download/{session_id}/{stored}"
     logger.info("mobile upload: %s (%d bytes)", url, written)
-    return _json_response({"ok": True, "url": url, "size": written, "name": safe_name})
+    return _json_response({
+        "ok": True, "url": url, "size": written, "name": safe_name,
+        # Absolute server path — lets a mobile client put the same
+        # "saved at" note into the user message that Telegram does, so the
+        # file survives into agent history (readable after a failed turn
+        # or model switch), not just as a download link.
+        "path": str(target.resolve()),
+    })
 
 
 @require_key
