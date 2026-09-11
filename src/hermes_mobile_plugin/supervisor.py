@@ -44,28 +44,30 @@ class GatewaySupervisor:
     def is_gateway_alive(self) -> bool:
         """Check if gateway is responding.
 
-        Primary check uses the HTTP health endpoint; if that fails we fall back to a raw socket connection.
-        Returns:
-            True if gateway reports healthy, False otherwise.
+        HTTP 200 on /health is the ONLY liveness verdict. A raw TCP connect
+        used to be an accepted fallback, but it returns True for a process
+        wedged on the event loop (e.g. a blocking whisper call) — exactly the
+        failure a watchdog must catch. The socket probe now runs only to
+        enrich the log line, never to flip the verdict.
         """
-        # Try HTTP health check first – this works for the default API server.
         try:
             import urllib.request
-            with urllib.request.urlopen(GATEWAY_HEALTH_CHECK_URL, timeout=2) as resp:
-                logger.debug("Health check HTTP status %s", resp.status)
+            with urllib.request.urlopen(GATEWAY_HEALTH_CHECK_URL, timeout=5) as resp:
                 if resp.status == 200:
                     return True
+                logger.warning("Health check returned HTTP %s", resp.status)
         except Exception as e:
             logger.debug("Health check failed: %s", e)
-            # HTTP check failed; continue to socket check.
-            pass
 
-        # Fallback: raw TCP socket connection.
+        # Diagnostic only: listening socket but no HTTP 200 == wedged process.
         try:
             with socket.create_connection(("127.0.0.1", self.port), timeout=2):
-                return True
+                logger.warning(
+                    "Gateway accepts TCP on %s but /health is not answering "
+                    "(event loop wedged?) — treating as down", self.port)
         except Exception:
-            return False
+            pass
+        return False
 
     def restart_gateway(self) -> bool:
         """Attempt to restart the Hermes Agent gateway.
@@ -108,14 +110,40 @@ class GatewaySupervisor:
             return False
 
     def _write_pid(self) -> None:
-        """Write current PID to file."""
+        """Acquire an exclusive flock on the PID file and stamp our PID.
+
+        The lock, not the file contents, is the single-instance guarantee:
+        the old read-then-write check was TOCTOU (a gateway restart racing
+        `cli install` could spawn two watchdogs whose restart storms fought
+        each other). flock dies with the process, so a killed watchdog frees
+        the lock instantly. Returns silently-alive if someone else holds it.
+        """
+        import fcntl
+
         LOGS_DIR.mkdir(parents=True, exist_ok=True)
-        SUPERVISOR_PID_FILE.write_text(str(os.getpid()), encoding="utf-8")
+        self._lock_handle = open(SUPERVISOR_PID_FILE, "a+", encoding="utf-8")
+        try:
+            fcntl.flock(self._lock_handle, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except OSError:
+            self._lock_handle.close()
+            self._lock_handle = None
+            logger.info("Another supervisor holds the lock; exiting")
+            self._running = False
+            return
+        self._lock_handle.seek(0)
+        self._lock_handle.truncate()
+        self._lock_handle.write(str(os.getpid()))
+        self._lock_handle.flush()
 
     def _remove_pid(self) -> None:
-        """Remove PID file."""
-        if SUPERVISOR_PID_FILE.exists():
-            SUPERVISOR_PID_FILE.unlink()
+        """Release the lock we own (file stays; the holder is authoritative)."""
+        handle = getattr(self, "_lock_handle", None)
+        if handle is not None:
+            try:
+                handle.close()
+            except OSError:
+                pass
+            self._lock_handle = None
 
     def run(self) -> None:
         """Run the supervisor main loop.
@@ -124,6 +152,13 @@ class GatewaySupervisor:
         """
         self._running = True
         self._write_pid()
+        if not self._running:
+            return
+
+        # Auto-reap the gateways we spawn; without this every restart leaves
+        # a <defunct> child (we are their parent) until the watchdog dies.
+        import signal
+        signal.signal(signal.SIGCHLD, signal.SIG_IGN)
 
         logger.info("Gateway supervisor started (port %s)", self.port)
         # Give the gateway a moment to become reachable after startup.

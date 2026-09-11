@@ -54,32 +54,21 @@ def cmd_install(args: argparse.Namespace) -> int:
     # Step 3: Start supervisor
     print("🛡️  Step 3/3: Starting 24x7 gateway supervisor...")
 
-    # Check if already running
-    from .supervisor import SUPERVISOR_PID_FILE
-    if SUPERVISOR_PID_FILE.exists():
-        try:
-            old_pid = int(SUPERVISOR_PID_FILE.read_text().strip())
-            import os
-            os.kill(old_pid, 0)
-            print(f"   ⚠️  Supervisor already running (PID: {old_pid})")
-        except (ProcessLookupError, ValueError):
-            SUPERVISOR_PID_FILE.unlink(missing_ok=True)
+    # Spawn the DETACHED watchdog (its own session, survives this CLI
+    # exiting). The old in-process daemon thread printed '24x7 monitoring'
+    # and then died the moment cmd_install returned — a lie. ensure_running
+    # is idempotent via the PID file + flock guard in the child.
+    from .supervisor import SUPERVISOR_PID_FILE, ensure_running, is_supervisor_running
 
-    # Start in background thread
-    def run_supervisor():
-        supervisor = GatewaySupervisor()
-        supervisor.run()
-
-    sup_thread = threading.Thread(target=run_supervisor, daemon=True, name="gateway-supervisor")
-    sup_thread.start()
-
-    # Give it time to start
-    time.sleep(1)
-
-    if sup_thread.is_alive():
-        print("   ✅ Supervisor started (24x7 monitoring enabled)")
+    if is_supervisor_running():
+        pid = int(SUPERVISOR_PID_FILE.read_text().strip()) if SUPERVISOR_PID_FILE.exists() else 0
+        print(f"   ⚠️  Supervisor already running (PID: {pid})")
     else:
-        print("   ⚠️  Supervisor failed to start")
+        sup_pid = ensure_running()
+        if sup_pid > 0:
+            print(f"   ✅ Supervisor started (PID: {sup_pid}, 24x7 monitoring enabled)")
+        else:
+            print("   ⚠️  Supervisor failed to start")
     print()
 
     # Summary

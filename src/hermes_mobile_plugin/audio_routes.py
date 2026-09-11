@@ -24,6 +24,7 @@ import functools
 import json
 import logging
 import mimetypes
+import os
 import re
 import secrets
 import time
@@ -70,6 +71,12 @@ def _expected_key() -> Optional[str]:
     except Exception as exc:  # noqa: BLE001 — config read must never 500 a route
         logger.warning("hermes-mobile-qr: could not read api_server key: %s", exc)
         return value  # keep the previous cached value for one more cycle
+    if not key:
+        # api_server resolves its own key as extra.key OR $API_SERVER_KEY
+        # (gateway/platforms/api_server.py). Without this fallback a
+        # env-keyed deployment would leave these routes keyless while the
+        # rest of the gateway enforces Bearer auth.
+        key = os.environ.get("API_SERVER_KEY") or None
     _expected_key_cache = (now, key)
     return key
 
@@ -128,6 +135,25 @@ def _json_response(payload: dict, status: int = 200) -> web.Response:
     return web.json_response(payload, status=status)
 
 
+# whisper-cli / edge-tts are blocking subprocess+HTTP calls. Running them on
+# the aiohttp event loop wedges EVERY platform (Telegram, agent turns) for
+# their full duration — and the supervisor's TCP fallback happily declares a
+# wedged gateway alive. Ship them to the default thread executor with a hard
+# timeout instead.
+_BLOCKING_TIMEOUT_SECONDS = 180.0
+
+
+async def _run_blocking(fn, *args, **kwargs):
+    import asyncio
+    import functools
+
+    loop = asyncio.get_running_loop()
+    return await asyncio.wait_for(
+        loop.run_in_executor(None, functools.partial(fn, *args, **kwargs)),
+        timeout=_BLOCKING_TIMEOUT_SECONDS,
+    )
+
+
 @require_key
 async def _transcribe_route(request: web.Request) -> web.Response:
     """POST /api/audio/transcribe"""
@@ -153,7 +179,10 @@ async def _transcribe_route(request: web.Request) -> web.Response:
             )
 
     try:
-        text = transcribe_audio(audio_b64, mime_type=mime_type, profile=profile, model=model)
+        text = await _run_blocking(
+            transcribe_audio, audio_b64,
+            mime_type=mime_type, profile=profile, model=model,
+        )
     except AudioBackendError as exc:
         return _json_response({"ok": False, "error": str(exc)}, status=exc.status)
     except Exception as exc:
@@ -186,7 +215,9 @@ async def _speak_route(request: web.Request) -> web.Response:
     profile = payload.get("profile") or None
 
     try:
-        audio_bytes, mime_type, provider = synthesize_speech(text, profile=profile)
+        audio_bytes, mime_type, provider = await _run_blocking(
+            synthesize_speech, text, profile=profile
+        )
     except AudioBackendError as exc:
         return _json_response({"ok": False, "error": str(exc)}, status=exc.status)
     except Exception as exc:
