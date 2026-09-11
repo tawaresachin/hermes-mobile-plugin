@@ -280,6 +280,41 @@ async def _context_usage_route(request: web.Request) -> web.Response:
     })
 
 
+@require_key
+async def _serve_file_route(request: web.Request) -> web.Response:
+    """GET /api/mobile/file?path=<abs> -> raw bytes of a server file.
+
+    The mobile counterpart of Telegram's native document delivery: when the
+    agent ends a turn with MEDIA:/abs/file.pdf, the app can actually fetch
+    it. Security rides on the host's own gate: validate_media_delivery_path
+    (resolved symlinks, credential/system denylist, strict-mode aware) — the
+    SAME check api_server applies to MEDIA tags before Telegram delivery.
+    Anything it rejects is a 404; we never reveal why.
+    """
+    import mimetypes
+    from pathlib import Path
+
+    raw = (request.query.get("path") or "").strip()
+    if not raw:
+        return _json_response({"ok": False, "error": "path is required"}, status=400)
+    try:
+        from gateway.platforms.base import validate_media_delivery_path
+        safe = validate_media_delivery_path(raw)
+    except Exception:
+        logger.warning("mobile file: host validator unavailable; refusing")
+        return _json_response({"ok": False, "error": "not found"}, status=404)
+    if not safe:
+        return _json_response({"ok": False, "error": "not found"}, status=404)
+    p = Path(safe)
+    if not p.is_file():
+        return _json_response({"ok": False, "error": "not found"}, status=404)
+    ctype = mimetypes.guess_type(p.name)[0] or "application/octet-stream"
+    return web.FileResponse(p, headers={
+        "Content-Type": ctype,
+        "Content-Disposition": f'inline; filename="{p.name}"',
+    })
+
+
 
 def register(native_app: web.Application) -> None:
     """Attach system/diag routes to the api_server's web.Application."""
@@ -288,9 +323,11 @@ def register(native_app: web.Application) -> None:
     native_app.router.add_post("/api/diag/log", _diag_route)
     native_app.router.add_get("/api/mobile/context-window", _context_window_route)
     native_app.router.add_get("/api/mobile/context-usage", _context_usage_route)
+    native_app.router.add_get("/api/mobile/file", _serve_file_route)
     logger.info(
         "[hermes-mobile-qr v%s] system routes registered: GET /api/system/status, "
         "POST /api/system/awake, POST /api/diag/log, "
-        "GET /api/mobile/context-window, GET /api/mobile/context-usage",
+        "GET /api/mobile/context-window, GET /api/mobile/context-usage, "
+        "GET /api/mobile/file",
         PLUGIN_VERSION,
     )
