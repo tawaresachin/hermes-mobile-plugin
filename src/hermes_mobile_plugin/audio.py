@@ -22,6 +22,9 @@ from typing import Any, Iterator, Optional
 logger = logging.getLogger(__name__)
 
 # Mirrors hermes-agent/hermes_cli/web_server.py constants.
+# NOTE: effectively unreachable — the api_server's aiohttp client_max_size
+# (10 MB total body) rejects larger requests before this code runs; a 25 MB
+# recording base64-encodes to ~33 MB and dies at the gateway first.
 _MAX_TRANSCRIPTION_UPLOAD_BYTES = 25 * 1024 * 1024  # 25 MB
 _AUDIO_MIME_EXTENSIONS = {
     "audio/webm": ".webm",

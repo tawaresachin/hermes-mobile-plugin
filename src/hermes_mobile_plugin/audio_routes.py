@@ -38,7 +38,10 @@ from .constants import PLUGIN_VERSION, UPLOADS_DIR
 
 logger = logging.getLogger(__name__)
 
-_MAX_UPLOAD_BYTES = 25 * 1024 * 1024  # 25 MB, mirrors transcription limit
+_MAX_UPLOAD_BYTES = 9 * 1024 * 1024  # 9 MB — matches the app's cap. The
+# api_server app's aiohttp client_max_size (MAX_REQUEST_BYTES = 10 MB) 413s
+# any larger body BEFORE this route runs; 9 MB leaves framing headroom so
+# the route's own error (clear message) fires before the gateway's generic 413.
 _SAFE_ID_RE = re.compile(r"^[A-Za-z0-9_\-]{1,64}$")  # session ids: api_... / uuid-ish
 _SAFE_NAME_RE = re.compile(r"^[A-Za-z0-9._\-]{1,128}$")  # filenames (no path separators)
 
@@ -305,7 +308,10 @@ async def _upload_route(request: web.Request) -> web.Response:
                     break
                 written += len(chunk)
                 if written > _MAX_UPLOAD_BYTES:
-                    raise AudioBackendError("file too large (max 25 MB)", status=413)
+                    raise AudioBackendError(
+                        f"file too large (max {_MAX_UPLOAD_BYTES // (1024 * 1024)} MB)",
+                        status=413,
+                    )
                 fh.write(chunk)
     except AudioBackendError as exc:
         target.unlink(missing_ok=True)
@@ -318,6 +324,29 @@ async def _upload_route(request: web.Request) -> web.Response:
     if written == 0:
         target.unlink(missing_ok=True)
         return _json_response({"ok": False, "error": "empty file"}, status=400)
+
+    # Best-effort disk retention: drop uploads older than 30 days so the
+    # store cannot silently grow (checked only on upload — cheap scandir).
+    try:
+        cutoff = time.time() - 30 * 86400
+        if UPLOADS_DIR.is_dir():
+            for sess in UPLOADS_DIR.iterdir():
+                if not sess.is_dir():
+                    continue
+                for old in sess.iterdir():
+                    try:
+                        if old.is_file() and old.stat().st_mtime < cutoff:
+                            old.unlink()
+                            logger.info("upload retention: dropped %s", old)
+                    except OSError:
+                        pass
+                try:
+                    if not any(sess.iterdir()):
+                        sess.rmdir()
+                except OSError:
+                    pass
+    except OSError:
+        pass  # retention is cosmetic; never fail an accepted upload
 
     url = f"/api/audio/download/{session_id}/{stored}"
     logger.info("mobile upload: %s (%d bytes)", url, written)
