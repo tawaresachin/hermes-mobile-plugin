@@ -8,18 +8,30 @@ PLUGIN_NAME: Final[str] = "hermes-mobile-qr"
 PLUGIN_VERSION: Final[str] = "0.0.4"
 PACKAGE_NAME: Final[str] = "hermes-mobile-plugin"
 
-# Gateway configuration
+# Gateway configuration. DEFAULT_GATEWAY_PORT is the historical name kept
+# as an alias; GATEWAY_PORT is the single source of truth.
 GATEWAY_PORT: Final[int] = 8642
 GATEWAY_HEALTH_CHECK_URL: Final[str] = "http://127.0.0.1:8642/health"
-DEFAULT_GATEWAY_PORT: Final[int] = 8642
+DEFAULT_GATEWAY_PORT: Final[int] = GATEWAY_PORT
 
 # Supervisor configuration
 SUPERVISOR_CHECK_INTERVAL: Final[int] = 10  # seconds
 SUPERVISOR_FAILURE_THRESHOLD: Final[int] = 3
 SUPERVISOR_RESTART_DELAY: Final[int] = 30  # seconds
 
-# File paths
-HERMES_HOME: Final[Path] = Path.home() / ".hermes"
+# File paths. hermes-agent is profile-aware (HERMES_HOME override /
+# profiles via hermes_constants.get_hermes_home()); matching it keeps the
+# plugin's config, logs, PID file and uploads under the SAME home the
+# running gateway uses instead of pinning to the default one.
+def _resolve_hermes_home() -> Path:
+    try:
+        from hermes_constants import get_hermes_home
+        return Path(get_hermes_home())
+    except Exception:  # standalone use (CLI before hermes-agent is importable)
+        return Path.home() / ".hermes"
+
+
+HERMES_HOME: Final[Path] = _resolve_hermes_home()
 CONFIG_PATH: Final[Path] = HERMES_HOME / "config.yaml"
 PLUGINS_DIR: Final[Path] = HERMES_HOME / "plugins"
 PLUGIN_DIR: Final[Path] = PLUGINS_DIR / PLUGIN_NAME

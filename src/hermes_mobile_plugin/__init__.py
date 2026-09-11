@@ -79,7 +79,13 @@ class HermesMobileQRPlugin:
 # Standard plugin entry point (register(ctx))
 # ---------------------------------------------------------------------------
 
-_audio_registered = False
+# Registration is keyed on the aiohttp app INSTANCE, not a global bool: a
+# second api_server connect onto a DIFFERENT app must still get its routes,
+# while a double-wire of the SAME app stays a no-op. (WeakSet so a dead app
+# never pins memory and tests get a clean slate per instance.)
+import weakref
+
+_audio_wired_apps = weakref.WeakSet()
 _audio_lock = threading.Lock()
 
 
@@ -87,13 +93,13 @@ def _wire_audio_routes(native: Any, adapter: Any) -> None:
     """Factory passed to ``ctx.register_platform_handler("api_server", ...)``.
 
     Receives the api_server's aiohttp ``web.Application`` as ``native``
-    and registers the plugin's voice routes on it. Guarded so a second
-    connect (or another plugin loader) doesn't double-register.
+    and registers the plugin's voice routes on it. Guarded per-app so a
+    second connect of the SAME app doesn't double-register, while a fresh
+    app (hot-reload, tests) still gets mounted.
     """
-    global _audio_registered
     with _audio_lock:
-        if _audio_registered:
-            logger.debug("[hermes-mobile-qr] Audio routes already registered; skipping")
+        if native is not None and native in _audio_wired_apps:
+            logger.debug("[hermes-mobile-qr] Audio routes already registered on this app; skipping")
             return
         try:
             from .audio_routes import register as _register_routes
@@ -117,7 +123,8 @@ def _wire_audio_routes(native: Any, adapter: Any) -> None:
                 "[hermes-mobile-qr] Failed to register audio routes: %s", exc
             )
             return
-        _audio_registered = True
+        if native is not None:
+            _audio_wired_apps.add(native)
 
 
 async def _maybe_generate_qr(ctx: Any) -> None:

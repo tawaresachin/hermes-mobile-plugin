@@ -26,6 +26,7 @@ import shutil
 import subprocess
 import sys
 import time
+from collections import OrderedDict
 from typing import Any, Optional
 
 from aiohttp import web
@@ -107,7 +108,7 @@ async def _run(binary: str) -> Any:
 
 @require_key
 async def _diag_route(request: web.Request) -> web.Response:
-    """POST /api/mobile/diag {device, version, log} — store on-device diag log."""
+    """POST /api/diag/log {device, version, log} — store on-device diag log."""
     try:
         payload = await _read_json(request)
     except Exception as exc:
@@ -143,8 +144,9 @@ async def _diag_route(request: web.Request) -> web.Response:
 # (config override -> endpoint probe -> catalog -> family defaults), so the
 # phone never guesses a window. Cached: resolution can hit the network.
 
-_CTX_CACHE: dict = {}
+_CTX_CACHE: "OrderedDict[tuple, tuple]" = OrderedDict()
 _CTX_TTL = 600.0
+_CTX_MAX = 64  # client-controlled keys (model/provider); cap + evict oldest
 
 
 @require_key
@@ -182,6 +184,8 @@ async def _context_window_route(request: web.Request) -> web.Response:
         total = None
     if total:
         _CTX_CACHE[(model, provider)] = (total, now + _CTX_TTL)
+        while len(_CTX_CACHE) > _CTX_MAX:
+            _CTX_CACHE.popitem(last=False)  # drop oldest (insertion order)
     return _json_response({"ok": bool(total), "model": model, "provider": provider,
                            "context_length": total})
 
@@ -286,7 +290,7 @@ def register(native_app: web.Application) -> None:
     native_app.router.add_get("/api/mobile/context-usage", _context_usage_route)
     logger.info(
         "[hermes-mobile-qr v%s] system routes registered: GET /api/system/status, "
-        "POST /api/system/awake, POST /api/mobile/diag, "
+        "POST /api/system/awake, POST /api/diag/log, "
         "GET /api/mobile/context-window, GET /api/mobile/context-usage",
         PLUGIN_VERSION,
     )

@@ -19,6 +19,7 @@ Mounted via ``ctx.register_platform_handler("api_server", _wire)`` in
 
 from __future__ import annotations
 
+import asyncio
 import base64
 import functools
 import json
@@ -141,6 +142,42 @@ def _json_response(payload: dict, status: int = 200) -> web.Response:
 # wedged gateway alive. Ship them to the default thread executor with a hard
 # timeout instead.
 _BLOCKING_TIMEOUT_SECONDS = 180.0
+
+
+# Upload retention: sweep at most once an hour, off the event loop.
+_SWEEP_INTERVAL_SECONDS = 3600.0
+_SWEEP_MAX_AGE_SECONDS = 30 * 86400
+_last_sweep_monotonic = 0.0
+
+
+def _sweep_expired_uploads() -> int:
+    """Delete upload files older than 30 days; drop emptied session dirs.
+    Returns the number of files removed. Blocking (stat/unlink) - callers
+    run it via asyncio.to_thread."""
+    removed = 0
+    cutoff = time.time() - _SWEEP_MAX_AGE_SECONDS
+    try:
+        sessions = list(UPLOADS_DIR.iterdir()) if UPLOADS_DIR.is_dir() else []
+    except OSError:
+        return 0
+    for sess in sessions:
+        try:
+            if not sess.is_dir():
+                continue
+            for old in list(sess.iterdir()):
+                try:
+                    if old.is_file() and old.stat().st_mtime < cutoff:
+                        old.unlink()
+                        removed += 1
+                except OSError:
+                    pass
+            if not any(sess.iterdir()):
+                sess.rmdir()
+        except OSError:
+            continue
+    if removed:
+        logger.info("upload retention: dropped %d expired file(s)", removed)
+    return removed
 
 
 async def _run_blocking(fn, *args, **kwargs):
@@ -357,27 +394,16 @@ async def _upload_route(request: web.Request) -> web.Response:
         return _json_response({"ok": False, "error": "empty file"}, status=400)
 
     # Best-effort disk retention: drop uploads older than 30 days so the
-    # store cannot silently grow (checked only on upload — cheap scandir).
-    try:
-        cutoff = time.time() - 30 * 86400
-        if UPLOADS_DIR.is_dir():
-            for sess in UPLOADS_DIR.iterdir():
-                if not sess.is_dir():
-                    continue
-                for old in sess.iterdir():
-                    try:
-                        if old.is_file() and old.stat().st_mtime < cutoff:
-                            old.unlink()
-                            logger.info("upload retention: dropped %s", old)
-                    except OSError:
-                        pass
-                try:
-                    if not any(sess.iterdir()):
-                        sess.rmdir()
-                except OSError:
-                    pass
-    except OSError:
-        pass  # retention is cosmetic; never fail an accepted upload
+    # store cannot silently grow. Sweeping is O(all upload files) with a
+    # stat each, so it is throttled to once an hour and runs off the
+    # event loop (never inside the accepted-upload response path).
+    global _last_sweep_monotonic
+    if time.monotonic() - _last_sweep_monotonic > _SWEEP_INTERVAL_SECONDS:
+        _last_sweep_monotonic = time.monotonic()
+        try:
+            await asyncio.to_thread(_sweep_expired_uploads)
+        except Exception:
+            logger.debug("upload retention sweep failed", exc_info=True)
 
     url = f"/api/audio/download/{session_id}/{stored}"
     logger.info("mobile upload: %s (%d bytes)", url, written)
