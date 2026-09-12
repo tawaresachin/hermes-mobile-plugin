@@ -212,71 +212,179 @@ def _read_state_db_ro():
 
 @require_key
 async def _context_usage_route(request: web.Request) -> web.Response:
-    """GET /api/mobile/context-usage?session_id=X -> {used, total, model, provider}."""
+    """GET /api/mobile/context-usage?session_id=X -> {used, total, model, source}.
+
+    Parity contract with Telegram /status and the desktop meter: the number
+    must come from the agent's own measurement chain, NOT a raw SQL text sum.
+    Chain (first hit wins):
+      1. live/cached gateway-runner agent -> context_compressor.last_prompt_tokens
+         (provider-exact; Telegram-originated sessions),
+      2. the session row's persisted provider usage anchor + delta estimate,
+         else agent estimate_messages_tokens_rough over the REAL conversation
+         loader (counts tool_calls JSON / reasoning / images — the app's own
+         sessions land here),
+      3. degraded: LENGTH/4 SQL sum (source="estimate") for ancient gateways
+         without SessionDB reachable from this process.
+    The old implementation was arm 3 only — it undercounted tool-heavy
+    sessions by ~20% vs Telegram on the same conversation.
+    """
     sid = (request.query.get("session_id") or "").strip()[:200]
     if not sid:
         return _json_response({"ok": False, "error": "session_id is required"}, status=400)
+    runner = request.app.get("gateway_runner")
 
-    def _query(sid=sid):
+    def _rotate(sid):
+        """Follow compression parent->child chain (max 8 hops) to the live tip."""
+        import sqlite3
+        db = _read_state_db_ro()
+        if db is None:
+            return sid, None
+        try:
+            row = db.execute("SELECT model, output_tokens FROM sessions WHERE id = ?", (sid,)).fetchone()
+            cur, hops = sid, 0
+            while row is None and hops < 8:
+                nxt = db.execute(
+                    "SELECT id FROM sessions WHERE parent_session_id = ? ORDER BY started_at DESC LIMIT 1",
+                    (cur,)).fetchone()
+                if not nxt:
+                    break
+                cur = nxt[0]
+                hops += 1
+                row = db.execute("SELECT model, output_tokens FROM sessions WHERE id = ?", (cur,)).fetchone()
+            return cur, row
+        except sqlite3.Error:
+            return sid, None
+        finally:
+            db.close()
+
+    def _agent_route(sid):
+        """(used, total, model) from the live/cached runner agent. None when
+        this session has no runner-side agent (app sessions don't)."""
+        if runner is None:
+            return None
+        try:
+            entry = runner.session_store.lookup_by_session_id(sid)
+            if entry is None:
+                return None
+            agent = runner._running_agents.get(entry.session_key)
+            if agent is None:
+                agent = runner._cached_agent_for(entry.session_key)
+            comp = getattr(agent, "context_compressor", None) if agent is not None else None
+            used = max(0, int(getattr(comp, "last_prompt_tokens", 0) or 0)) if comp else 0
+            total = int(getattr(comp, "context_length", 0) or 0) if comp else 0
+            if used <= 0:
+                used = max(0, int(getattr(entry, "last_prompt_tokens", 0) or 0))
+            model = str(getattr(agent, "model", "") or "") if agent is not None else ""
+            return (used, total, model) if used > 0 or total > 0 else None
+        except Exception:
+            logger.debug("context-usage: agent route unavailable", exc_info=True)
+            return None
+
+    def _session_db_route(sid):
+        """(used, model) via the host's SessionDB + the agent's own estimators;
+        None when unreachable (caller falls back to the SQL sum)."""
+        try:
+            adapter = request.app.get("api_server_adapter")
+            if adapter is None:
+                return None
+            # Lazily open through the adapter's own cached accessor (thread
+            # call is fine: single-flight lock, DB object cached after first
+            # open). Reading _session_db directly would miss fresh gateways.
+            sdb = adapter._ensure_session_db()
+            if sdb is None:
+                return None
+            msgs = sdb.get_messages_as_conversation(sid)
+            from agent.model_metadata import estimate_messages_tokens_rough
+            from agent.usage_anchor import (USAGE_ANCHOR_MODEL_CONFIG_KEY,
+                                            anchored_context_tokens, message_fingerprint)
+            anchor = None
+            getter = getattr(sdb, "get_session_model_config_value", None)
+            if callable(getter):
+                try:
+                    anchor = getter(sid, USAGE_ANCHOR_MODEL_CONFIG_KEY, None)
+                except Exception:
+                    anchor = None
+            used = None
+            if isinstance(anchor, dict) and anchor:
+                used = anchored_context_tokens(msgs, anchor, charge_stale_thinking=False)
+                if used is None:
+                    # Row-count drift between the agent's live message list
+                    # and the loader's output can stale the base_count (the
+                    # fingerprint still exists, just at another index).
+                    # Re-anchor by fingerprint so the provider-exact priced
+                    # prefix is reused instead of dropping to full-estimate.
+                    fp = anchor.get("base_last_fp")
+                    bc = int(anchor.get("base_count") or 0)
+                    want_role = anchor.get("base_last_role")
+                    if isinstance(fp, str) and fp:
+                        for idx in range(max(0, bc - 12), len(msgs)):
+                            m = msgs[idx]
+                            if (m.get("role") == want_role
+                                    and message_fingerprint(m) == fp):
+                                used = anchored_context_tokens(
+                                    msgs, {**anchor, "base_count": idx + 1},
+                                    charge_stale_thinking=False)
+                                break
+            if used is None:
+                used = estimate_messages_tokens_rough(msgs, charge_stale_thinking=False)
+            return (max(0, int(used or 0)), "")
+        except Exception:
+            logger.debug("context-usage: session-db route unavailable", exc_info=True)
+            return None
+
+    def _sql_estimate(sid, row):
+        """Degraded fallback: active-row token_count sum (+system prompt
+        estimate). Only counts what SQL can see; kept for old installs where
+        SessionDB import/adapter access fails."""
+        import sqlite3
         db = _read_state_db_ro()
         if db is None:
             return None
         try:
-            row = db.execute(
-                "SELECT model, output_tokens FROM sessions WHERE id = ?",
-                (sid,),
-            ).fetchone()
-            if row is None:
-                # Compression rotates transcripts (new session id). Follow
-                # the parent->child chain (max 8 hops) to the live session.
-                cur, hops = sid, 0
-                while hops < 8:
-                    nxt = db.execute(
-                        "SELECT id FROM sessions WHERE parent_session_id = ? "
-                        "ORDER BY started_at DESC LIMIT 1", (cur,),
-                    ).fetchone()
-                    if not nxt:
-                        break
-                    cur = nxt[0]
-                    hops += 1
-                if cur != sid:
-                    sid = cur
-                    row = db.execute(
-                        "SELECT model, output_tokens FROM sessions WHERE id = ?",
-                        (sid,),
-                    ).fetchone()
-            if row is None:
-                # First-ever turn for an app-declared id: empty history.
-                return {"model": "", "last_prompt": 0, "carry": 0}
-            # LIVE context = token_count over ACTIVE rows only. The
-            # compressor flips superseded history to active=0, so this
-            # sum is exactly what the next turn carries — correct even
-            # mid-compression while the app was closed.
             used = db.execute(
                 "SELECT COALESCE(SUM(CASE WHEN token_count > 0 THEN token_count "
                 "ELSE LENGTH(COALESCE(content, '')) / 4 END), 0) FROM messages "
-                "WHERE session_id = ? AND active = 1", (sid,),
-            ).fetchone()[0]
-            # The live user turn in flight isn't a row yet; add the system
-            # prompt estimate of the session row when present.
+                "WHERE session_id = ? AND active = 1", (sid,)).fetchone()[0]
             sp = db.execute(
                 "SELECT COALESCE(LENGTH(system_prompt), 0) / 4 FROM sessions WHERE id = ?",
-                (sid,),
-            ).fetchone()
+                (sid,)).fetchone()
             used = int(used or 0) + int((sp[0] if sp else 0) or 0)
-            return {"model": row[0] or "", "last_prompt": int(used or 0),
-                    "carry": (row[1] or 0)}
+            return {"model": (row[0] if row else "") or "", "last_prompt": used,
+                    "carry": ((row[1] if row else 0) or 0)}
         except sqlite3.Error:
             return None
         finally:
             db.close()
 
-    data = await asyncio.to_thread(_query)
+    tip_sid, row = await asyncio.to_thread(_rotate, sid)
+    hit = await asyncio.to_thread(_agent_route, tip_sid)
+    if row is None and hit is None:
+        # Unknown session (first-ever app-declared id, empty history): zeros,
+        # not 404 — the meter starts fresh, matching the previous contract.
+        return _json_response({"ok": True, "session_id": sid, "model": "",
+                               "last_prompt_tokens": 0, "carry_output_tokens": 0,
+                               "source": "empty"})
+    if hit:
+        used_a, total_a, model_a = hit
+        return _json_response({
+            "ok": True, "session_id": tip_sid, "model": model_a,
+            "last_prompt_tokens": used_a, "context_length": total_a, "source": "agent",
+        })
+    db_hit = await asyncio.to_thread(_session_db_route, tip_sid)
+    if db_hit is not None and (db_hit[0] > 0 or row is None):
+        return _json_response({
+            "ok": True, "session_id": tip_sid,
+            "model": db_hit[1] or ((row[0] if row else "") or ""),
+            "last_prompt_tokens": int(db_hit[0]), "carry_output_tokens": (row[1] if row else 0) or 0,
+            "source": "agent",
+        })
+    data = await asyncio.to_thread(_sql_estimate, tip_sid, row)
     if data is None:
         return _json_response({"ok": False, "error": "session not found"}, status=404)
     return _json_response({
-        "ok": True, "session_id": sid, "model": data["model"],
+        "ok": True, "session_id": tip_sid, "model": data["model"],
         "last_prompt_tokens": data["last_prompt"], "carry_output_tokens": data["carry"],
+        "source": "estimate",
     })
 
 
