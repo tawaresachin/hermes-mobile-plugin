@@ -19,6 +19,7 @@ import asyncio
 import logging
 import os
 import re
+
 import subprocess
 import time
 from pathlib import Path
@@ -37,6 +38,17 @@ _check_cache: Optional[Tuple[float, Dict[str, Any]]] = None
 _log_path = str(HERMES_HOME / "logs" / "mobile_update.log")
 
 _SHA_LINE = re.compile(r"\b([0-9a-f]{7,40})\b")
+
+
+def _installed_version() -> str:
+    # The plugin runs INSIDE the gateway process, which is the hermes
+    # install — importing the package IS the installed version, no
+    # subprocess needed.
+    try:
+        import hermes_cli
+        return getattr(hermes_cli, "__version__", "") or ""
+    except Exception:
+        return ""
 
 
 def _hermes_bin() -> Optional[str]:
@@ -76,6 +88,7 @@ def _run_check_git() -> Dict[str, Any]:
         behind = int(behind_s) if behind_s.isdigit() else None
         return {"ok": behind is not None, "up_to_date": behind == 0, "behind": behind,
                 "current_sha": cur, "latest_sha": lat, "branch": branch,
+                "installed_version": _installed_version(),
                 "detail": f"git: {cur} -> {lat} ({behind} behind origin/{branch})"}
     except Exception as exc:
         return {"ok": False, "error": f"git fallback failed: {str(exc)[:200]}"}
@@ -129,6 +142,7 @@ def _run_check() -> Dict[str, Any]:
         "current_sha": current,
         "latest_sha": latest,
         "branch": branch,
+        "installed_version": _installed_version(),
         "detail": out[-1200:],
     }
 
@@ -180,6 +194,22 @@ async def _update_apply_route(request: web.Request) -> web.Response:
                            "note": "Update + gateway restart started; poll update/check to confirm"})
 
 
+@require_key
+async def _update_version_route(request: web.Request) -> web.Response:
+    """Instant: installed version + local sha. NO fetch, NO CLI — the About
+    row renders from this; the round-arrow check runs the full route."""
+    import subprocess, sys
+    sha = ""
+    try:
+        sha = subprocess.run(
+            ["git", "-C", str(Path(sys.executable).parent.parent), "rev-parse", "--short", "HEAD"],
+            capture_output=True, text=True, timeout=10).stdout.strip()
+    except Exception:
+        pass
+    return _json_response({"ok": True, "version": _installed_version(), "sha": sha})
+
+
 def register(app: web.Application) -> None:
+    app.router.add_get("/api/mobile/update/version", _update_version_route)
     app.router.add_get("/api/mobile/update/check", _update_check_route)
     app.router.add_post("/api/mobile/update/apply", _update_apply_route)
