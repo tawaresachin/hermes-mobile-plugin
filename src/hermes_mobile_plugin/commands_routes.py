@@ -108,8 +108,8 @@ def _build_manifest() -> dict:
 async def _commands_route(request: web.Request) -> web.Response:
     global _manifest_cache
     now = time.monotonic()
-    if _manifest_cache and _manifest_cache[1] > now and not request.query.get("fresh"):
-        return _json_response(_manifest_cache[0])
+    if _manifest_cache and _manifest_cache[0] > now and not request.query.get("fresh"):
+        return _json_response(_manifest_cache[1])
     try:
         manifest = await asyncio.to_thread(_build_manifest)
     except Exception as exc:
