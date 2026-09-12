@@ -131,6 +131,14 @@ def _run_check() -> Dict[str, Any]:
     shas = _SHA_LINE.findall(out)
     current = shas[0][:7] if shas else ""
     latest = shas[-1][:7] if len(shas) > 1 else (current if up else "")
+    if not current:
+        # CLI output format drifted (no SHA lines) — git plumbing is the
+        # source of truth for where HEAD actually is.
+        fb = _run_check_git()
+        current = fb.get("current_sha") or ""
+        latest = fb.get("latest_sha") or latest
+        if behind is None:
+            behind = fb.get("behind")
     branch = ""
     bm = re.search(r"branch '?([A-Za-z0-9._/-]+)'?", out)
     if bm:
