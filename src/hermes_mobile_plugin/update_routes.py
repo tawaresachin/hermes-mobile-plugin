@@ -49,6 +49,38 @@ def _hermes_bin() -> Optional[str]:
     return which("hermes")
 
 
+def _checkout_dir() -> Optional[Path]:
+    import sys
+    d = Path(sys.executable).parent.parent
+    return d if (d / ".git").exists() or (d.parent / ".git").exists() else None
+
+
+def _run_check_git() -> Dict[str, Any]:
+    """Report-only fallback: fetch + count, no install side effects. Same
+    plumbing `hermes update --check` wraps; used when the CLI itself errors
+    so the card never dead-ends."""
+    import sys
+    repo = Path(sys.executable).parent.parent
+    try:
+        branch = subprocess.run(["git", "-C", str(repo), "rev-parse", "--abbrev-ref", "HEAD"],
+                                capture_output=True, text=True, timeout=30).stdout.strip() or "main"
+        subprocess.run(["git", "-C", str(repo), "fetch", "origin", branch],
+                       capture_output=True, text=True, timeout=_UPDATE_TIMEOUT_S)
+        behind_s = subprocess.run(
+            ["git", "-C", str(repo), "rev-list", f"HEAD..origin/{branch}", "--count"],
+            capture_output=True, text=True, timeout=60).stdout.strip()
+        cur = subprocess.run(["git", "-C", str(repo), "rev-parse", "--short", "HEAD"],
+                             capture_output=True, text=True, timeout=30).stdout.strip()
+        lat = subprocess.run(["git", "-C", str(repo), "rev-parse", "--short", f"origin/{branch}"],
+                             capture_output=True, text=True, timeout=30).stdout.strip()
+        behind = int(behind_s) if behind_s.isdigit() else None
+        return {"ok": behind is not None, "up_to_date": behind == 0, "behind": behind,
+                "current_sha": cur, "latest_sha": lat, "branch": branch,
+                "detail": f"git: {cur} -> {lat} ({behind} behind origin/{branch})"}
+    except Exception as exc:
+        return {"ok": False, "error": f"git fallback failed: {str(exc)[:200]}"}
+
+
 def _run_check() -> Dict[str, Any]:
     hermes = _hermes_bin()
     if not hermes:
@@ -66,6 +98,15 @@ def _run_check() -> Dict[str, Any]:
     out = ((proc.stdout or "") + "\n" + (proc.stderr or "")).strip()
     # Strip ANSI just in case NO_COLOR was ignored.
     out = re.sub(r"\x1b\[[0-9;]*m", "", out)
+    if "Traceback" in out:
+        # Upstream CLI crashed mid-check (observed: update_cmd.py int('')) —
+        # fall back to plain git plumbing so the card still reports truth.
+        fb = _run_check_git()
+        if fb.get("ok"):
+            fb["detail"] = "hermes update --check crashed; counted via git.\n" + fb["detail"]
+            return fb
+        return {"ok": False, "error": "update check crashed (see detail)",
+                "detail": out[-1200:]}
     low = out.lower()
     up = any(k in low for k in (
         "already up to date", "up-to-date", "no updates",
