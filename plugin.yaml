@@ -1,5 +1,5 @@
 name: hermes-mobile-qr
-version: "0.0.6"
+version: "0.0.46"
 description: |
   Hermes Mobile QR + Voice plugin. Generates a QR code for the Hermes Mobile
   App to connect directly to the Hermes Agent Desktop gateway (port 8642),
@@ -15,4 +15,4 @@ description: |
 author: Sachin Taware
 license: MIT
 homepage: https://github.com/tawaresachin/hermes-mobile-plugin
-hermes_min_version: "0.20.0"
+hermes_min_version: "0.0.46"
