@@ -32,6 +32,7 @@ gateway you already run (default port **8642**).
 | **Keep-awake control** | Toggle the Termux/system wake lock remotely so long runs aren't killed. |
 | **24/7 supervisor** | Optional watchdog auto-restarts the gateway if it ever dies, and survives reboots of the app. |
 | **Crash reports** | The app pushes its crash dumps here (`~/.hermes/mobile-logs/diag/`) so issues are diagnosable without cables. |
+| **Swarm-ready** | Turns started with the app's Swarm toggle carry their own orchestration directives — no extra server setup. |
 
 Nothing is re-implemented: STT/TTS reuse Hermes Agent's own provider chain, sessions/models are
 read from the agent's API. The plugin adds routes, not forks.
