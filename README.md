@@ -17,7 +17,7 @@ gateway you already run (default port **8642**).
 
 ## What you get
 
-![Pairing screen](docs/screenshots/qr-pairing.jpg)
+<img src="docs/screenshots/qr-pairing.jpg" width="360" alt="Pairing screen">
 
 *Settings in the app after scanning the QR: server URL + key configured, connection live.*
 
