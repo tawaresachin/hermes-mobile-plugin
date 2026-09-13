@@ -1,116 +1,55 @@
-# Hermes Mobile Plugin
+# Hermes Mobile QR & Audio Plugin ☤
 
-Generates QR codes for Hermes Mobile App to connect directly to Hermes Agent Desktop gateway (port 8642).
+[![License: MIT](https://img.shields.io/badge/License-MIT-green?style=for-the-badge)](https://github.com/tawaresachin/hermes-mobile-plugin/blob/main/LICENSE)
+[![Version](https://img.shields.io/badge/Version-0.0.46-blue?style=for-the-badge)](https://github.com/tawaresachin/hermes-mobile-plugin/releases)
+[![Docs](https://img.shields.io/badge/Docs-Hermes--Agent-FFD700?style=for-the-badge)](https://hermes-agent.nousresearch.com/docs/)
+[![CI](https://img.shields.io/github/actions/workflow/status/tawaresachin/hermes-mobile-plugin/ci.yml?branch=main&style=for-the-badge)](https://github.com/tawaresachin/hermes-mobile-plugin/actions)
 
-## Installation
+**What it does** – Generates a QR code for the Hermes Mobile app, exposes local STT/TTS routes and keeps the gateway running 24/7.
 
-### From Local Source
+| Feature | Description |
+|---|---|
+| QR Pairing | One‑click QR that configures the mobile app with IP, API key and port. |
+| Voice support | Local Whisper STT and Edge TTS routes on the gateway. |
+| 24/7 supervisor | Auto‑restarts the gateway if it crashes. |
+| Attachment support | Upload / download files between phone and agent workspace. |
+
+## Install (one command)
+
 ```bash
-# Clone the repository
-git clone https://github.com/<your-username>/hermes-mobile-plugin.git
+pip install hermes-mobile-plugin
+hermes-mobile-plugin install
+```
+
+*Direct from GitHub*  
+
+```bash
+pip install git+https://github.com/tawaresachin/hermes-mobile-plugin@0.0.46
+hermes-mobile-plugin install
+```
+
+## How to connect the phone
+
+1. Install the Hermes Mobile APK from the releases page.  
+2. Run `hermes-mobile-plugin qr` – a QR image appears.  
+3. In the app open Settings → **Scan QR Code** and scan the image.  
+4. The app auto‑configures and connects.
+
+## Commands you may need
+
+- `hermes-mobile-plugin status` – show gateway health.  
+- `hermes-mobile-plugin supervisor --stop` – stop monitor.  
+- `hermes-mobile-plugin supervisor --start` – start / restart monitor.
+
+## Development (optional)
+
+```bash
+git clone https://github.com/tawaresachin/hermes-mobile-plugin.git
 cd hermes-mobile-plugin
 pip install -e .
-
-# Then run the one-command setup
-hermes-mobile-plugin install
-```
-
-### Directly from GitHub (without cloning)
-```bash
-# Install the plugin directly from GitHub
-pip install git+https://github.com/<your-username>/hermes-mobile-plugin@v0.0.1
-
-# Then run the one-command setup
-hermes-mobile-plugin install
-```
-
-> Replace `<your-username>` with your GitHub username or the repository owner.
-
-## Usage
-
-### Full Setup (Recommended)
-```bash
-# One-command complete setup
-hermes-mobile-plugin install
-```
-
-### Individual Commands
-```bash
-# Generate QR code only
-hermes-mobile-plugin qr
-
-# Check supervisor status
-hermes-mobile-plugin status
-
-# Start/stop supervisor manually
-hermes-mobile-plugin supervisor      # Start
-hermes-mobile-plugin supervisor --stop  # Stop
-```
-
-## How it Works
-
-1. Reads Hermes Agent config (`~/.hermes/config.yaml`)
-2. Detects Tailscale IP (or local IP) using multiple fallback methods
-3. Extracts API key and gateway port
-4. Generates QR code with connection credentials
-5. Starts 24x7 gateway supervisor to keep gateway online
-
-## QR Code Contains
-```json
-{
-  "url": "http://<your-tailscale-ip>:8642",
-  "api_key": "<your-api-key>",
-  "context_compression": true,
-  "tailscale_ip": "<your-tailscale-ip>",
-  "version": "0.0.1"
-}
-```
-
-> The actual values are read from your Hermes Agent configuration (`~/.hermes/config.yaml`).
-
-## Mobile App Setup
-1. Install Hermes Mobile APK (from GitHub releases)
-2. Open app → Settings → Scan QR Code
-3. Scan QR from your browser
-4. App auto-configures and connects to Hermes Agent Desktop gateway
-
-## Gateway Supervisor (24x7 Monitoring)
-The supervisor ensures your Hermes Gateway stays online:
-- Checks health every 10 seconds
-- Restarts gateway after 3 consecutive failures
-- Logs to `~/.hermes/logs/gateway_supervisor.log`
-- PID file at `~/.hermes/logs/gateway_supervisor.pid`
-
-### Supervisor Management
-```bash
-# Check status
-hermes-mobile-plugin status
-
-# View logs
-tail -f ~/.hermes/logs/gateway_supervisor.log
-
-# Stop supervisor
-hermes-mobile-plugin supervisor --stop
-
-# Restart supervisor
-hermes-mobile-plugin supervisor
-```
-
-## Requirements
-- Python 3.10+
-- Hermes Agent 0.20.0+ (installed separately from https://hermes-agent.nousresearch.com)
-- Tailscale (optional, for cross-network connections)
-- Hermes Mobile APK (separate download)
-
-## Development
-```bash
-# Install from source
-pip install -e .
-
-# Run tests
 pytest
-
-# Format code
-black src/
-ruff check src/
 ```
+
+## License
+
+MIT – see the LICENSE file.
