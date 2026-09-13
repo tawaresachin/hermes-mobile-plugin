@@ -144,29 +144,29 @@ def cmd_status(args: argparse.Namespace) -> int:
     """
     from .supervisor import SUPERVISOR_PID_FILE
 
-    # Check supervisor
-    if SUPERVISOR_PID_FILE.exists():
-        try:
-            pid = int(SUPERVISOR_PID_FILE.read_text().strip())
-            import os
-            os.kill(pid, 0)
-            print(f"✅ Supervisor running (PID: {pid})")
-        except (ProcessLookupError, ValueError):
-            print("❌ Supervisor not running (stale PID file)")
-            SUPERVISOR_PID_FILE.unlink(missing_ok=True)
+    # Check supervisor (shared helper — os.kill-based probes signal the
+    # process on Windows, which is exactly what we must not do here)
+    from .supervisor import is_supervisor_running
+    from .constants import GATEWAY_PORT, SUPERVISOR_PID_FILE
+    if is_supervisor_running():
+        print(f"✅ Supervisor running (PID: {SUPERVISOR_PID_FILE.read_text().strip()})")
     else:
         print("❌ Supervisor not running")
 
-    # Check gateway
-    import socket
+    # Check gateway (TCP liveness + HTTP /health — the same contract the
+    # supervisor uses; a wedged event loop passes TCP but fails HTTP)
+    import urllib.request
     try:
-        with socket.create_connection(("127.0.0.1", 8642), timeout=2):
-            print("✅ Gateway is healthy (port 8642)")
-    except (socket.timeout, ConnectionRefusedError, OSError):
-        print("❌ Gateway is down (port 8642)")
-        return 1
-
-    return 0
+        with urllib.request.urlopen(
+                f"http://127.0.0.1:{GATEWAY_PORT}/health", timeout=3) as resp:
+            healthy = resp.status == 200
+    except Exception:
+        healthy = False
+    if healthy:
+        print(f"✅ Gateway is healthy (port {GATEWAY_PORT})")
+        return 0
+    print(f"❌ Gateway is down (port {GATEWAY_PORT})")
+    return 1
 
 
 def cmd_supervisor(args: argparse.Namespace) -> int:
@@ -181,25 +181,22 @@ def cmd_supervisor(args: argparse.Namespace) -> int:
     from .supervisor import SUPERVISOR_PID_FILE
 
     if args.stop:
-        # Stop supervisor
-        if SUPERVISOR_PID_FILE.exists():
-            try:
-                pid = int(SUPERVISOR_PID_FILE.read_text().strip())
-                import os
-                os.kill(pid, 15)
-                SUPERVISOR_PID_FILE.unlink()
-                print("✅ Supervisor stopped")
-                return 0
-            except ProcessLookupError:
-                print("⚠️  Supervisor not running")
-                SUPERVISOR_PID_FILE.unlink(missing_ok=True)
-                return 0
-            except ValueError:
-                print("❌ Invalid PID file")
-                return 1
-        else:
+        # Stop supervisor (cross-platform terminate)
+        if not SUPERVISOR_PID_FILE.exists():
             print("⚠️  Supervisor not running (no PID file)")
             return 0
+        try:
+            pid = int(SUPERVISOR_PID_FILE.read_text().strip())
+        except ValueError:
+            print("❌ Invalid PID file")
+            return 1
+        from .supervisor import terminate_pid
+        if not terminate_pid(pid):
+            print("⚠️  Supervisor not running")
+        else:
+            print("✅ Supervisor stopped")
+        SUPERVISOR_PID_FILE.unlink(missing_ok=True)
+        return 0
     else:
         # Start supervisor
         print("🔄 Starting Gateway Supervisor (24x7 daemon)...")

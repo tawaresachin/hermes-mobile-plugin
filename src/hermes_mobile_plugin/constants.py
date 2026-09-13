@@ -5,14 +5,20 @@ from typing import Final
 
 # Plugin metadata
 PLUGIN_NAME: Final[str] = "hermes-mobile-qr"
-PLUGIN_VERSION: Final[str] = "0.0.5"
+PLUGIN_VERSION: Final[str] = "0.0.6"
 PACKAGE_NAME: Final[str] = "hermes-mobile-plugin"
 
 # Gateway configuration. DEFAULT_GATEWAY_PORT is the historical name kept
 # as an alias; GATEWAY_PORT is the single source of truth.
 GATEWAY_PORT: Final[int] = 8642
-GATEWAY_HEALTH_CHECK_URL: Final[str] = "http://127.0.0.1:8642/health"
 DEFAULT_GATEWAY_PORT: Final[int] = GATEWAY_PORT
+
+def gateway_health_url(port: int = GATEWAY_PORT) -> str:
+    """Health URL for the GIVEN port (the old constant hard-coded 8642, so a
+    supervisor constructed with a custom port silently checked another)."""
+    return f"http://127.0.0.1:{port}/health"
+
+GATEWAY_HEALTH_CHECK_URL: Final[str] = gateway_health_url()
 
 # Supervisor configuration
 SUPERVISOR_CHECK_INTERVAL: Final[int] = 10  # seconds
@@ -58,3 +64,18 @@ QR_BORDER: Final[int] = 4
 
 # Security
 API_KEY_DISPLAY_TRUNCATION: Final[int] = 20
+
+
+def find_hermes_cli() -> "str | None":
+    """Path to the hermes launcher: venv bin/Scripts dir (hermes(.exe) on
+    Windows) or PATH. Single source of truth for supervisor + update routes."""
+    import sys
+    from pathlib import Path
+    from shutil import which
+    bin_dir = Path(sys.executable).parent
+    names = ["hermes.exe", "hermes"] if sys.platform == "win32" else ["hermes"]
+    for n in names:
+        cand = bin_dir / n
+        if cand.exists():
+            return str(cand)
+    return which("hermes.exe" if sys.platform == "win32" else "hermes")

@@ -10,22 +10,33 @@ import shutil
 import socket
 import subprocess
 import sys
+import signal as signal_module
 import time
 from pathlib import Path
 from typing import Optional
 
 from .constants import (
     DEFAULT_GATEWAY_PORT,
-    GATEWAY_HEALTH_CHECK_URL,
     LOGS_DIR,
     SUPERVISOR_CHECK_INTERVAL,
     SUPERVISOR_FAILURE_THRESHOLD,
     SUPERVISOR_LOG_FILE,
     SUPERVISOR_PID_FILE,
     SUPERVISOR_RESTART_DELAY,
+    find_hermes_cli,
+    gateway_health_url,
 )
 
 logger = logging.getLogger(__name__)
+
+
+def _detach_kwargs() -> dict:
+    """Popen kwargs that detach a child from the current console/session."""
+    if os.name == "nt":
+        DETACHED_PROCESS = 0x00000008
+        CREATE_NEW_PROCESS_GROUP = 0x00000200
+        return {"creationflags": DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP}
+    return {"start_new_session": True}
 
 
 class GatewaySupervisor:
@@ -40,6 +51,7 @@ class GatewaySupervisor:
         self.port = port
         self._running = False
         self._pid: Optional[int] = None
+        self._lock_handle = None
 
     def is_gateway_alive(self) -> bool:
         """Check if gateway is responding.
@@ -52,7 +64,7 @@ class GatewaySupervisor:
         """
         try:
             import urllib.request
-            with urllib.request.urlopen(GATEWAY_HEALTH_CHECK_URL, timeout=5) as resp:
+            with urllib.request.urlopen(gateway_health_url(self.port), timeout=5) as resp:
                 if resp.status == 200:
                     return True
                 logger.warning("Health check returned HTTP %s", resp.status)
@@ -78,11 +90,7 @@ class GatewaySupervisor:
         logger.warning("Gateway is down. Attempting restart...")
 
         try:
-            hermes_bin = shutil.which("hermes")
-            if not hermes_bin:
-                # Fallback: the venv this plugin runs from usually has the launcher.
-                candidate = Path(sys.executable).parent / "hermes"
-                hermes_bin = str(candidate) if candidate.exists() else None
+            hermes_bin = find_hermes_cli()
             if not hermes_bin:
                 logger.error("Cannot restart gateway: 'hermes' not found on PATH")
                 return False
@@ -95,12 +103,13 @@ class GatewaySupervisor:
             )
             time.sleep(2)
 
-            # Start new gateway detached from this process group.
+            # Start new gateway detached from this process group (POSIX: new
+            # session; Windows: DETACHED_PROCESS so it survives us).
             proc = subprocess.Popen(
                 [hermes_bin, "gateway", "run"],
                 stdout=subprocess.DEVNULL,
                 stderr=subprocess.DEVNULL,
-                start_new_session=True,
+                **_detach_kwargs(),
             )
             logger.info("Spawned gateway process (PID: %s)", proc.pid)
             return True
@@ -118,12 +127,10 @@ class GatewaySupervisor:
         each other). flock dies with the process, so a killed watchdog frees
         the lock instantly. Returns silently-alive if someone else holds it.
         """
-        import fcntl
-
         LOGS_DIR.mkdir(parents=True, exist_ok=True)
         self._lock_handle = open(SUPERVISOR_PID_FILE, "a+", encoding="utf-8")
         try:
-            fcntl.flock(self._lock_handle, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            self._acquire_file_lock(self._lock_handle)
         except OSError:
             self._lock_handle.close()
             self._lock_handle = None
@@ -134,6 +141,22 @@ class GatewaySupervisor:
         self._lock_handle.truncate()
         self._lock_handle.write(str(os.getpid()))
         self._lock_handle.flush()
+
+    @staticmethod
+    def _acquire_file_lock(handle) -> None:
+        """Exclusive non-blocking lock on the PID file (raises OSError if
+        held). fcntl on POSIX, msvcrt byte-range lock on Windows; no-op on
+        platforms with neither (single-instance then rests on the PID probe)."""
+        if os.name == "nt":
+            import msvcrt
+            handle.seek(0)
+            msvcrt.locking(handle.fileno(), msvcrt.LK_NBLCK, 1)
+            return
+        try:
+            import fcntl
+        except ImportError:
+            return
+        fcntl.flock(handle, fcntl.LOCK_EX | fcntl.LOCK_NB)
 
     def _remove_pid(self) -> None:
         """Release the lock we own (file stays; the holder is authoritative)."""
@@ -157,8 +180,9 @@ class GatewaySupervisor:
 
         # Auto-reap the gateways we spawn; without this every restart leaves
         # a <defunct> child (we are their parent) until the watchdog dies.
-        import signal
-        signal.signal(signal.SIGCHLD, signal.SIG_IGN)
+        # POSIX-only: Windows has no SIGCHLD and no zombie semantics.
+        if hasattr(signal_module, "SIGCHLD"):
+            signal_module.signal(signal_module.SIGCHLD, signal_module.SIG_IGN)
 
         logger.info("Gateway supervisor started (port %s)", self.port)
         # Give the gateway a moment to become reachable after startup.
@@ -182,9 +206,7 @@ class GatewaySupervisor:
                     )
 
                     if consecutive_failures >= SUPERVISOR_FAILURE_THRESHOLD:
-                        if shutil.which("hermes") is None and not (
-                            Path(sys.executable).parent / "hermes"
-                        ).exists():
+                        if find_hermes_cli() is None:
                             # Hermes Agent is gone — nothing to supervise.
                             logger.error(
                                 "hermes binary not found; supervisor exiting"
@@ -229,16 +251,21 @@ def start_daemon() -> int:
     Returns:
         Daemon PID if successful, -1 on failure.
     """
+    if os.name == "nt":
+        # fork/setsid/dup2 are POSIX. Windows: spawn the same detached
+        # re-exec that ensure_running() uses (stdout/stderr already wired
+        # to the log file there).
+        return ensure_running()
     # Check if already running
     if SUPERVISOR_PID_FILE.exists():
         try:
             old_pid = int(SUPERVISOR_PID_FILE.read_text().strip())
-            os.kill(old_pid, 0)
+        except (ValueError, OSError):
+            old_pid = 0
+        if old_pid and pid_alive(old_pid):
             logger.warning("Supervisor already running (PID: %s)", old_pid)
             return old_pid
-        except (ProcessLookupError, ValueError):
-            # Stale PID file
-            SUPERVISOR_PID_FILE.unlink(missing_ok=True)
+        SUPERVISOR_PID_FILE.unlink(missing_ok=True)
 
     try:
         pid = os.fork()
@@ -271,17 +298,69 @@ def start_daemon() -> int:
     return 0
 
 
+def pid_alive(pid: int) -> bool:
+    """Liveness probe WITHOUT signalling. POSIX: kill(pid,0). Windows:
+    os.kill there would send CTRL_C_EVENT for 0 — OpenProcess+GetExitCode
+    instead."""
+    if os.name == "nt":
+        import ctypes
+        PROCESS_QUERY_LIMITED_INFORMATION = 0x1000
+        STILL_ACTIVE = 259
+        kernel32 = ctypes.windll.kernel32
+        handle = kernel32.OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, False, pid)
+        if not handle:
+            return False
+        try:
+            code = ctypes.c_ulong()
+            if kernel32.GetExitCodeProcess(handle, ctypes.byref(code)):
+                return code.value == STILL_ACTIVE
+            return True
+        finally:
+            kernel32.CloseHandle(handle)
+    try:
+        os.kill(pid, 0)
+        return True
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+    except OSError:
+        return False
+
+
+def terminate_pid(pid: int) -> bool:
+    """Ask a process to die (supervisor stop)."""
+    if os.name == "nt":
+        import ctypes
+        PROCESS_TERMINATE = 0x0001
+        kernel32 = ctypes.windll.kernel32
+        handle = kernel32.OpenProcess(PROCESS_TERMINATE, False, pid)
+        if not handle:
+            return False
+        try:
+            return bool(kernel32.TerminateProcess(handle, 15))
+        finally:
+            kernel32.CloseHandle(handle)
+    try:
+        os.kill(pid, 15)
+        return True
+    except (ProcessLookupError, OSError):
+        return False
+
+
 def is_supervisor_running() -> bool:
     """True if a supervisor daemon is alive (per PID file)."""
     if not SUPERVISOR_PID_FILE.exists():
         return False
     try:
         pid = int(SUPERVISOR_PID_FILE.read_text().strip())
-        os.kill(pid, 0)
-        return True
-    except (ProcessLookupError, ValueError, OSError):
+    except (ValueError, OSError):
         SUPERVISOR_PID_FILE.unlink(missing_ok=True)
         return False
+    if not pid_alive(pid):
+        SUPERVISOR_PID_FILE.unlink(missing_ok=True)
+        return False
+    return True
 
 
 def ensure_running() -> int:
@@ -302,6 +381,7 @@ def ensure_running() -> int:
         # Re-exec this module as __main__ with the plugin's own src dir on
         # PYTHONPATH (the package lives in ~/.hermes/plugins, not site-packages).
         pkg_root = Path(__file__).resolve().parent   # .../hermes_mobile_plugin
+        detach = _detach_kwargs()
         env = dict(os.environ)
         env["PYTHONPATH"] = (
             str(pkg_root.parent)
@@ -312,10 +392,10 @@ def ensure_running() -> int:
             stdin=subprocess.DEVNULL,
             stdout=log_file,
             stderr=log_file,
-            cwd="/",
+            cwd=os.path.abspath(os.sep),  # "/" POSIX, drive root Windows
             env=env,
-            start_new_session=True,
             close_fds=True,
+            **detach,
         )
         logger.info("Spawned gateway watchdog (PID %s)", proc.pid)
         return proc.pid

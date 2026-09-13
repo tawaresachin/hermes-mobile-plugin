@@ -181,9 +181,6 @@ def _sweep_expired_uploads() -> int:
 
 
 async def _run_blocking(fn, *args, **kwargs):
-    import asyncio
-    import functools
-
     loop = asyncio.get_running_loop()
     return await asyncio.wait_for(
         loop.run_in_executor(None, functools.partial(fn, *args, **kwargs)),

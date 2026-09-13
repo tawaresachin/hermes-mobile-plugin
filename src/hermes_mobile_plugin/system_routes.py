@@ -4,16 +4,15 @@ The gateway api_server has no system-control surface; the mobile app's
 "Keep Computer Awake" toggle and diag-log upload call these. Mounted on the
 same api_server aiohttp application as the audio routes.
 
-  GET    /api/system/status           -> {os, platform, python, awake, awake_mechanism}
+  GET    /api/system/status  (key)    -> {os, platform, python, awake, awake_mechanism}
   POST   /api/system/awake   {awake}  -> {ok, mechanism}
   POST   /api/diag/log     {device, version, log} -> {ok, path}
 
 Awake control uses Termux's termux-wake-lock / termux-wake-unlock when
 present (this install runs on Termux/Android); on other platforms the routes
 report the capability honestly (awake=false, mechanism=null, POST -> 501) so
-the app UI degrades instead of lying. All routes require the gateway Bearer
-key except GET /api/system/status (no state change, no user data — mirrors
-/api/audio/health's posture).
+the app UI degrades instead of lying. All routes — including the status
+probe — require the gateway Bearer key.
 """
 
 from __future__ import annotations
@@ -51,8 +50,11 @@ def _read_awake_state() -> bool:
         return False
 
 
+@require_key
 async def _system_status_route(request: web.Request) -> web.Response:
-    """GET /api/system/status"""
+    """GET /api/system/status — gated like every other route: it reports
+    plugin version, OS and keep-awake state, which a LAN/VPN neighbor has
+    no business enumerating. The app's interceptor always sends the key."""
     return _json_response(
         {
             "ok": True,

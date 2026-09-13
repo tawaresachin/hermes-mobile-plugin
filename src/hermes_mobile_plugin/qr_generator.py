@@ -1,10 +1,11 @@
 """QR code generation for Hermes Mobile App connection."""
 
 import json
+from html import escape
+from pathlib import Path
 from urllib.parse import quote
 import logging
 import webbrowser
-from pathlib import Path
 from typing import Optional
 
 try:
@@ -129,6 +130,11 @@ def get_html_template(qr_svg: str, data: dict) -> str:
     display_key = (
         f"{api_key[:20]}..." if len(api_key) > 20 else (api_key or "[MISSING]")
     )
+    # Escape every config-derived string before HTML interpolation — a key
+    # or hostname containing markup must not inject into this page.
+    url_h = escape(str(data["url"]), quote=True)
+    key_h = escape(display_key, quote=True)
+    ip_h = escape(str(data["tailscale_ip"]), quote=True)
 
     warning_html = ""
     if not api_key:
@@ -166,11 +172,11 @@ def get_html_template(qr_svg: str, data: dict) -> str:
 
         <div class="detail">
             <span class="label">Server URL</span>
-            {data['url']}
+            {url_h}
         </div>
         <div class="detail">
             <span class="label">API Key</span>
-            {display_key}
+            {key_h}
         </div>
         <div class="detail">
             <span class="label">Context Compression</span>
@@ -181,7 +187,7 @@ def get_html_template(qr_svg: str, data: dict) -> str:
     </div>
 
     <div class="footer">
-        Plugin v{PLUGIN_VERSION} &bull; Generated for {data['tailscale_ip']}<br>
+        Plugin v{PLUGIN_VERSION} &bull; Generated for {ip_h}<br>
         Keep this QR code private.
     </div>
 </body>
@@ -230,7 +236,7 @@ async def generate_qr(config: Optional[dict] = None, output_dir: Optional[Path] 
         logger.info("QR code HTML saved to: %s", output_path)
 
         if open_browser:
-            webbrowser.open(f"file://{output_path.absolute()}")
+            webbrowser.open(Path(output_path).absolute().as_uri())
 
     return output_path
 

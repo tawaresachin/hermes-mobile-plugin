@@ -186,16 +186,15 @@ def register(ctx: Any) -> None:
     except Exception as exc:
         logger.warning("[Hermes Mobile QR] Watchdog spawn failed: %s", exc)
 
-    # Fire-and-forget QR generation so we don't block loader.
+    # Fire-and-forget QR generation so we don't block loader. Scheduling
+    # only ever happens on an ALREADY-running loop: a run_until_complete
+    # fallback here could block the plugin loader (or start a stray loop
+    # beside the gateway's). No loop at register-time -> QR skipped until
+    # the next startup; the CLI covers the manual path.
     try:
-        loop = asyncio.get_event_loop()
-        if loop.is_running():
-            asyncio.create_task(_maybe_generate_qr(ctx))
-        else:
-            loop.run_until_complete(_maybe_generate_qr(ctx))
+        asyncio.get_running_loop().create_task(_maybe_generate_qr(ctx))
     except RuntimeError:
-        # No event loop in this context — skip.
-        pass
+        logger.debug("[hermes-mobile-qr] no running loop at register(); QR gen deferred")
 
 
 # ---------------------------------------------------------------------------

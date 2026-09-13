@@ -21,6 +21,7 @@ import os
 import re
 
 import subprocess
+import sys
 import time
 from pathlib import Path
 from typing import Any, Dict, Optional, Tuple
@@ -52,13 +53,10 @@ def _installed_version() -> str:
 
 
 def _hermes_bin() -> Optional[str]:
-    """The hermes CLI entry point next to the running venv, or PATH."""
-    import sys
-    cand = Path(sys.executable).parent / "hermes"
-    if cand.exists():
-        return str(cand)
-    from shutil import which
-    return which("hermes")
+    """The hermes CLI entry point next to the running venv, or PATH.
+    Shared with the supervisor; resolves hermes.exe on Windows."""
+    from .constants import find_hermes_cli
+    return find_hermes_cli()
 
 
 def _checkout_dir() -> Optional[Path]:
@@ -182,17 +180,25 @@ async def _update_apply_route(request: web.Request) -> web.Response:
     if not hermes:
         return _json_response({"ok": False, "error": "hermes CLI not found on server"}, status=500)
     Path(_log_path).parent.mkdir(parents=True, exist_ok=True)
-    script = (
-        f"sleep 2; "
-        f"'{hermes}' update; "
-        f"'{hermes}' gateway restart"
-    )
+    if os.name == "nt":
+        # PowerShell equivalent; DETACHED so it outlives the gateway restart.
+        cmd = ["powershell", "-NoProfile", "-Command",
+               f"Start-Sleep 2; & '{hermes}' update; & '{hermes}' gateway restart"]
+        detach = {"creationflags": 0x00000008 | 0x00000200}  # DETACHED|NEW_GROUP
+    else:
+        script = (
+            f"sleep 2; "
+            f"'{hermes}' update; "
+            f"'{hermes}' gateway restart"
+        )
+        cmd = ["setsid", "bash", "-c", script]
+        detach = {"start_new_session": True}
     try:
         with open(_log_path, "ab") as logf:
             subprocess.Popen(
-                ["setsid", "bash", "-c", script],
+                cmd,
                 stdin=subprocess.DEVNULL, stdout=logf, stderr=logf,
-                start_new_session=True,
+                **detach,
             )
     except Exception as exc:
         return _json_response({"ok": False, "error": str(exc)[:300]}, status=500)
@@ -206,7 +212,6 @@ async def _update_apply_route(request: web.Request) -> web.Response:
 async def _update_version_route(request: web.Request) -> web.Response:
     """Instant: installed version + local sha. NO fetch, NO CLI — the About
     row renders from this; the round-arrow check runs the full route."""
-    import subprocess, sys
     sha = ""
     try:
         sha = subprocess.run(
