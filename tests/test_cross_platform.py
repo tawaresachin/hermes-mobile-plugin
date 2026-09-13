@@ -66,3 +66,16 @@ def test_status_html_escapes_injection():
     assert '"><' not in html          # no raw quote can close an attr/tag
     assert '" onload=' not in html    # quote escaped -> no event handler
     assert "&lt;script&gt;" in html   # present as inert text
+
+
+def test_plugin_version_derives_from_manifest():
+    """The version constant and the manifest can never disagree — the drift
+    between constants.py and plugin.yaml is what broke the About row."""
+    import re
+    from pathlib import Path
+    from hermes_mobile_plugin.constants import PLUGIN_VERSION
+    manifest = Path(__file__).resolve().parent.parent / "plugin.yaml"
+    text = manifest.read_text(encoding="utf-8")
+    m = re.search(r"""^version:\s*["']?([0-9][0-9A-Za-z.\-]*)["']?\s*$""", text, re.M)
+    assert m, "plugin.yaml has no version line"
+    assert m.group(1) == PLUGIN_VERSION

@@ -5,8 +5,31 @@ from typing import Final
 
 # Plugin metadata
 PLUGIN_NAME: Final[str] = "hermes-mobile-qr"
-PLUGIN_VERSION: Final[str] = "0.0.6"
 PACKAGE_NAME: Final[str] = "hermes-mobile-plugin"
+
+
+def _read_plugin_version() -> str:
+    """Version is read from plugin.yaml — the manifest the loader and the
+    release tool both trust. Hardcoding it here is what let the two numbers
+    drift (yaml 0.0.46 vs this 0.0.6). Walk up for plugin.yaml so it resolves
+    from src/ checkout, installed package, or the deployed plugin dir."""
+    import re
+
+    for parent in Path(__file__).resolve().parents:
+        manifest = parent / "plugin.yaml"
+        if manifest.is_file():
+            try:
+                m = re.search(
+                    r"^version:\s*[\"']?([0-9][0-9A-Za-z.\-]*)[\"']?\s*$",
+                    manifest.read_text(encoding="utf-8"), re.M)
+                if m:
+                    return m.group(1)
+            except OSError:
+                pass
+    return "0.0.0+unknown"
+
+
+PLUGIN_VERSION: Final[str] = _read_plugin_version()
 
 # Gateway configuration. DEFAULT_GATEWAY_PORT is the historical name kept
 # as an alias; GATEWAY_PORT is the single source of truth.
