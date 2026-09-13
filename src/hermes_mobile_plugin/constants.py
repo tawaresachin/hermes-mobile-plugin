@@ -31,6 +31,14 @@ def _read_plugin_version() -> str:
 
 PLUGIN_VERSION: Final[str] = _read_plugin_version()
 
+# HTTP contract version between app and plugin — bumped ONLY when a route the
+# app depends on changes shape or disappears (an API break), NEVER for feature
+# releases. The app gates on this number, not on PLUGIN_VERSION, so the two
+# products can version independently and forever.
+#   1 = everything up to and including 0.0.6 (runs, files, voice, commands,
+#       usage, model options, update, diag upload)
+PROTOCOL_VERSION: Final[int] = 1
+
 # Gateway configuration. DEFAULT_GATEWAY_PORT is the historical name kept
 # as an alias; GATEWAY_PORT is the single source of truth.
 GATEWAY_PORT: Final[int] = 8642

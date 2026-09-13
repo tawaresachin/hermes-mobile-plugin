@@ -31,7 +31,7 @@ from typing import Any, Optional
 from aiohttp import web
 
 from .audio_routes import _json_response, _read_json, require_key
-from .constants import HERMES_HOME, PLUGIN_VERSION
+from .constants import HERMES_HOME, PLUGIN_VERSION, PROTOCOL_VERSION
 
 logger = logging.getLogger(__name__)
 
@@ -64,6 +64,7 @@ async def _system_status_route(request: web.Request) -> web.Response:
             "awake": _read_awake_state() if _wake_lock_bin() else False,
             "awake_mechanism": "termux-wake-lock" if _wake_lock_bin() else None,
             "plugin_version": PLUGIN_VERSION,
+            "plugin_protocol": PROTOCOL_VERSION,
         }
     )
 

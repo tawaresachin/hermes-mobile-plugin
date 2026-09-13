@@ -79,3 +79,14 @@ def test_plugin_version_derives_from_manifest():
     m = re.search(r"""^version:\s*["']?([0-9][0-9A-Za-z.\-]*)["']?\s*$""", text, re.M)
     assert m, "plugin.yaml has no version line"
     assert m.group(1) == PLUGIN_VERSION
+
+
+def test_protocol_version_exposed_in_system_status():
+    """App gates on plugin_protocol, not on the version string — it MUST be
+    present in /api/system/status and be an int >= 1."""
+    from hermes_mobile_plugin.constants import PROTOCOL_VERSION
+    assert isinstance(PROTOCOL_VERSION, int) and PROTOCOL_VERSION >= 1
+    import inspect
+    from hermes_mobile_plugin import system_routes
+    src = inspect.getsource(system_routes)
+    assert '"plugin_protocol": PROTOCOL_VERSION' in src
