@@ -12,7 +12,7 @@ description: |
   reuse hermes-agent's existing Whisper STT and TTS provider chain — no new
   providers are bundled.
 
-author: Hermes Mobile Team
+author: Sachin Taware
 license: MIT
 homepage: https://github.com/tawaresachin/hermes-mobile-plugin
 hermes_min_version: "0.20.0"
