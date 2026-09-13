@@ -1,7 +1,7 @@
 # Hermes Mobile QR & Audio Plugin ☤
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-green?style=for-the-badge)](https://github.com/tawaresachin/hermes-mobile-plugin/blob/main/LICENSE)
-[![Version](https://img.shields.io/badge/Version-0.0.46-blue?style=for-the-badge)](https://github.com/tawaresachin/hermes-mobile-plugin/releases)
+[![Version](https://img.shields.io/github/v/tag/tawaresachin/hermes-mobile-plugin?label=version&color=blue&style=for-the-badge)](https://github.com/tawaresachin/hermes-mobile-plugin/releases)
 [![Docs](https://img.shields.io/badge/Docs-Hermes--Agent-FFD700?style=for-the-badge)](https://hermes-agent.nousresearch.com/docs/)
 [![CI](https://img.shields.io/github/actions/workflow/status/tawaresachin/hermes-mobile-plugin/ci.yml?branch=main&style=for-the-badge)](https://github.com/tawaresachin/hermes-mobile-plugin/actions)
 
@@ -24,7 +24,7 @@ hermes-mobile-plugin install
 *Direct from GitHub*  
 
 ```bash
-pip install git+https://github.com/tawaresachin/hermes-mobile-plugin@0.0.46
+pip install git+https://github.com/tawaresachin/hermes-mobile-plugin@v0.0.6
 hermes-mobile-plugin install
 ```
 
