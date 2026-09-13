@@ -39,15 +39,20 @@ read from the agent's API. The plugin adds routes, not forks.
 
 ## Install
 
-Into the same Python environment your Hermes Agent runs in (its venv), pinned to a tag:
+**[Download the latest release →](https://github.com/tawaresachin/hermes-mobile-plugin/releases/latest)**
+(one signed `py3-none-any` wheel + sdist, `SHA256SUMS` + GPG signature included)
+
+Into the same Python environment your Hermes Agent runs in (its venv):
 
 ```bash
 pip install git+https://github.com/tawaresachin/hermes-mobile-plugin@v0.0.6
+# or from the release page: pip install hermes_mobile_plugin-<ver>-py3-none-any.whl
 hermes-mobile-plugin install      # registers plugin + generates the QR
 ```
 
-Not on PyPI (yet) — the GitHub tag *is* the release channel, which also matches how Hermes
-Agent itself updates from git.
+The plugin is pure Python — the one wheel runs unchanged on Windows, macOS, Linux and
+Termux (native deps resolve per-OS from PyPI at install time). Not on PyPI; GitHub Releases
+is the release channel, which matches how Hermes Agent itself updates from git.
 
 `install` copies the plugin into `~/.hermes/plugins/hermes-mobile-qr` and (re)starts the gateway.
 Then grab the [Hermes Mobile APK](https://github.com/tawaresachin/hermes-mobile/releases), open
