@@ -1,55 +1,101 @@
-# Hermes Mobile QR & Audio Plugin ☤
+# Hermes Mobile Plugin
 
-[![License: MIT](https://img.shields.io/badge/License-MIT-green?style=for-the-badge)](https://github.com/tawaresachin/hermes-mobile-plugin/blob/main/LICENSE)
-[![Version](https://img.shields.io/github/v/tag/tawaresachin/hermes-mobile-plugin?label=version&color=blue&style=for-the-badge)](https://github.com/tawaresachin/hermes-mobile-plugin/releases)
-[![Docs](https://img.shields.io/badge/Docs-Hermes--Agent-FFD700?style=for-the-badge)](https://hermes-agent.nousresearch.com/docs/)
-[![CI](https://img.shields.io/github/actions/workflow/status/tawaresachin/hermes-mobile-plugin/ci.yml?branch=main&style=for-the-badge)](https://github.com/tawaresachin/hermes-mobile-plugin/actions)
+<p align="center">
+  <img src="https://img.shields.io/github/v/tag/tawaresachin/hermes-mobile-plugin?label=version&color=blue&style=for-the-badge" alt="version">
+  <img src="https://img.shields.io/badge/License-MIT-green?style=for-the-badge" alt="MIT">
+  <img src="https://img.shields.io/badge/platforms-Windows%20%7C%20macOS%20%7C%20Linux%20%7C%20Android-blueviolet?style=for-the-badge" alt="platforms">
+  <img src="https://img.shields.io/badge/Python-3.10+-yellow?style=for-the-badge" alt="python">
+</p>
 
-**What it does** – Generates a QR code for the Hermes Mobile app, exposes local STT/TTS routes and keeps the gateway running 24/7.
+The server-side half of **Hermes Mobile**: one plugin that turns your running
+[Hermes Agent](https://hermes-agent.nousresearch.com) into a phone-ready hub — QR pairing, voice,
+files, and server management. No extra daemon, no cloud relay: everything is mounted on the
+gateway you already run (default port **8642**).
 
-| Feature | Description |
+> You install **Hermes Agent** from the official site, then this **one plugin**. That's the whole
+> server-side setup.
+
+## What you get
+
+![Pairing screen](docs/screenshots/qr-pairing.jpg)
+
+*Settings in the app after scanning the QR: server URL + key configured, connection live.*
+
+| Capability | What it means for you |
 |---|---|
-| QR Pairing | One‑click QR that configures the mobile app with IP, API key and port. |
-| Voice support | Local Whisper STT and Edge TTS routes on the gateway. |
-| 24/7 supervisor | Auto‑restarts the gateway if it crashes. |
-| Attachment support | Upload / download files between phone and agent workspace. |
+| **QR pairing** | `install` prints/opens a QR with URL + API key; the app scans it (camera or gallery) and configures + tests the connection itself. |
+| **Voice on-device** | Speech-to-text (Whisper) and text-to-speech routes on the gateway, so the phone mic/speaker work with zero extra services. |
+| **File transfer** | Upload attachments from the phone, download anything the agent creates — the chat shows real file cards, previewable in-app. |
+| **Context meter** | Live token usage / context window per session, straight from server truth. |
+| **Slash commands** | The app's `/` menu is built from your actual server commands, not a hardcoded list. |
+| **Update from your phone** | About screen checks and applies `hermes update` on the server — restart included. |
+| **Keep-awake control** | Toggle the Termux/system wake lock remotely so long runs aren't killed. |
+| **24/7 supervisor** | Optional watchdog auto-restarts the gateway if it ever dies, and survives reboots of the app. |
+| **Crash reports** | The app pushes its crash dumps here (`~/.hermes/mobile-logs/diag/`) so issues are diagnosable without cables. |
 
-## Install (one command)
+Nothing is re-implemented: STT/TTS reuse Hermes Agent's own provider chain, sessions/models are
+read from the agent's API. The plugin adds routes, not forks.
 
-```bash
-pip install hermes-mobile-plugin
-hermes-mobile-plugin install
-```
+## Install
 
-*Direct from GitHub*  
+Into the same Python environment your Hermes Agent runs in (its venv), pinned to a tag:
 
 ```bash
 pip install git+https://github.com/tawaresachin/hermes-mobile-plugin@v0.0.6
-hermes-mobile-plugin install
+hermes-mobile-plugin install      # registers plugin + generates the QR
 ```
 
-## How to connect the phone
+Not on PyPI (yet) — the GitHub tag *is* the release channel, which also matches how Hermes
+Agent itself updates from git.
 
-1. Install the Hermes Mobile APK from the releases page.  
-2. Run `hermes-mobile-plugin qr` – a QR image appears.  
-3. In the app open Settings → **Scan QR Code** and scan the image.  
-4. The app auto‑configures and connects.
+`install` copies the plugin into `~/.hermes/plugins/hermes-mobile-qr` and (re)starts the gateway.
+Then grab the [Hermes Mobile APK](https://github.com/tawaresachin/hermes-mobile/releases), open
+**Settings → Connect with QR**, and scan. LAN, Tailscale, or any tunnel — the QR carries the
+address your phone can actually reach.
 
-## Commands you may need
+## CLI
 
-- `hermes-mobile-plugin status` – show gateway health.  
-- `hermes-mobile-plugin supervisor --stop` – stop monitor.  
-- `hermes-mobile-plugin supervisor --start` – start / restart monitor.
+```text
+hermes-mobile-plugin install      # set up + show QR
+hermes-mobile-plugin qr           # regenerate the QR (--no-browser)
+hermes-mobile-plugin status       # supervisor + gateway health
+hermes-mobile-plugin supervisor --start|--stop|—daemon 24/7 watchdog
+```
 
-## Development (optional)
+## HTTP routes (all Bearer-key protected)
+
+Mounted on the api_server platform; the mobile app is the client.
+
+| Route | Purpose |
+|---|---|
+| `POST /api/audio/transcribe` · `POST /api/audio/speak` | STT / TTS |
+| `POST /api/audio/upload` · `GET /api/audio/download/{sid}/{name}` | attachments both ways |
+| `GET /api/mobile/file` | fetch agent-created files for MEDIA cards |
+| `GET /api/mobile/commands` · `POST /api/mobile/command/resolve` | slash-command menu |
+| `GET /api/mobile/context-usage` · `GET /api/mobile/context-window` | context meter |
+| `GET /api/mobile/update/check` · `POST /update/apply` · `GET /update/version` | server self-update |
+| `GET /api/system/status` · `POST /api/system/awake` | host status, keep-awake |
+| `POST /api/diag/log` · `GET /api/audio/health` | crash reports, liveness |
+
+## Cross-platform
+
+Runs wherever Hermes Agent runs — **Windows, macOS, Linux, Termux/Android** — with per-platform
+handling for process detachment, single-instance locks, launcher lookup (`hermes.exe` included),
+and keep-awake (termux-wake-lock / caffeine / powershell), degrading honestly when a mechanism
+doesn't exist. 47 tests cover the platform seams.
+
+## Development
 
 ```bash
 git clone https://github.com/tawaresachin/hermes-mobile-plugin.git
 cd hermes-mobile-plugin
-pip install -e .
-pytest
+pip install -e ".[dev]"
+PYTHONPATH=src pytest            # 47 tests
 ```
+
+Releases are tagged `v<version>`; `plugin.yaml` is the single source of the version string
+(`PLUGIN_VERSION` derives from it — packaging metadata can't drift).
 
 ## License
 
-MIT – see the LICENSE file.
+MIT © 2026 Sachin Taware
