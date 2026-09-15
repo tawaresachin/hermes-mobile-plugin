@@ -106,6 +106,7 @@ def _wire_audio_routes(native: Any, adapter: Any) -> None:
             from .system_routes import register as _register_system_routes
             from .commands_routes import register as _register_command_routes
             from .update_routes import register as _register_update_routes
+            from .providers_routes import register as _register_providers_routes
         except Exception as exc:
             logger.warning(
                 "[hermes-mobile-qr] Could not import route modules: %s", exc
@@ -122,6 +123,7 @@ def _wire_audio_routes(native: Any, adapter: Any) -> None:
             _register_system_routes(native)
             _register_command_routes(native)
             _register_update_routes(native)
+            _register_providers_routes(native)
         except Exception as exc:
             logger.exception(
                 "[hermes-mobile-qr] Failed to register audio routes: %s", exc
