@@ -181,17 +181,47 @@ async def _update_apply_route(request: web.Request) -> web.Response:
         return _json_response({"ok": False, "error": "hermes CLI not found on server"}, status=500)
     Path(_log_path).parent.mkdir(parents=True, exist_ok=True)
     if os.name == "nt":
-        # PowerShell equivalent; DETACHED so it outlives the gateway restart.
+        # Service-manager host: `gateway restart` is correct here (systemd
+        # /launchd equivalent owns relaunch). DETACHED so it outlives the
+        # gateway dying mid-update.
         cmd = ["powershell", "-NoProfile", "-Command",
-               f"Start-Sleep 2; & '{hermes}' update; & '{hermes}' gateway restart"]
+               f"Start-Sleep 2; & '{hermes}' update --yes; & '{hermes}' gateway restart"]
         detach = {"creationflags": 0x00000008 | 0x00000200}  # DETACHED|NEW_GROUP
     else:
+        # Restart authority depends on topology:
+        # - this plugin's detached supervisor watchdog is running (mobile
+        #   host): `gateway stop` is the bounded hand-off — the watchdog's
+        #   health loop (3 x 10s failures + 30s settle) relaunches the
+        #   gateway within ~a minute, so an update never leaves it stopped.
+        # - otherwise (systemd/launchd/desktop): the service manager owns
+        #   relaunch, and `gateway restart` is the correct verb.
+        # We never use `gateway restart` on the supervised mobile host: it is
+        # drain-aware (waits up to 180s for in-flight turns — on an
+        # app-triggered update that is the app's OWN turn) and it races the
+        # watchdog's restart loop; observed as a restart wedged 13+ min.
+        from .supervisor import is_supervisor_running
+        restart_cmd = (
+            f"'{hermes}' gateway stop"
+            if is_supervisor_running()
+            else f"'{hermes}' gateway restart"
+        )
+        # Termux host runs with SIGCHLD=IGNORE; a setsid child inherits the
+        # disposition and `hermes update`'s git-remote-https child dies
+        # (waitpid failure -> exit 1, no code swap). The perl wrapper resets
+        # it to the default handler before exec'ing. Skipped on hosts
+        # without perl — the SIGCHLD quirk is Termux-specific.
         script = (
             f"sleep 2; "
-            f"'{hermes}' update; "
-            f"'{hermes}' gateway restart"
+            f"'{hermes}' update --yes 2>&1; "
+            f"{restart_cmd} 2>&1"
         )
-        cmd = ["setsid", "bash", "-c", script]
+        import shutil
+        if shutil.which("perl"):
+            cmd = ["setsid", "perl", "-e",
+                   r'$SIG{CHLD}="DEFAULT"; exec @ARGV',
+                   "bash", "-c", script]
+        else:
+            cmd = ["setsid", "bash", "-c", script]
         detach = {"start_new_session": True}
     try:
         with open(_log_path, "ab") as logf:
