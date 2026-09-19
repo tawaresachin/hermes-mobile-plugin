@@ -52,13 +52,19 @@ jobs:
             exit 1
           fi
           echo "install.sh is pure LF and parses"
-      - name: Build sandbox (fake hermes + hermes_constants + home)
+      - name: Build sandbox (venv hermes + fake hermes_constants + home)
+        # A REAL venv, not the runner's system python3: on macOS that is
+        # PEP-668 externally-managed, pip refuses installs, and the sandbox
+        # would diverge from every actual Hermes layout (which is a venv).
+        # The shim's absolute shebang + sibling python3 also exercise the
+        # locator's venv-layout branch.
         run: |
           SB="$PWD/.ci-sandbox"
-          mkdir -p "$SB/bin" "$SB/mod" "$SB/home"
+          mkdir -p "$SB/mod" "$SB/home"
           printf 'import os\n\ndef get_hermes_home():\n    return os.environ["FAKE_HH"]\n' > "$SB/mod/hermes_constants.py"
-          printf '#!/usr/bin/env python3\nimport sys\nsys.exit(0)\n' > "$SB/bin/hermes"
-          chmod +x "$SB/bin/hermes"
+          python3 -m venv "$SB/venv"
+          printf '#!%s/bin/python3\nimport sys\nsys.exit(0)\n' "$SB/venv" > "$SB/venv/bin/hermes"
+          chmod +x "$SB/venv/bin/hermes"
           touch "$SB/home/config.yaml"
           echo "FAKE_HH=$SB/home" >> "$GITHUB_ENV"
           echo "SANDBOX=$SB" >> "$GITHUB_ENV"
@@ -66,7 +72,11 @@ jobs:
         env:
           TERMUX_VERSION: ''
         run: |
-          PATH="$SANDBOX/bin:$PATH" PYTHONPATH="$SANDBOX/mod" bash install.sh
+          PATH="$SANDBOX/venv/bin:$PATH" PYTHONPATH="$SANDBOX/mod" bash install.sh
+      - name: Confirm deps + QR actually landed in the venv
+        run: |
+          "$SANDBOX/venv/bin/python3" -c "import yaml, qrcode; print('deps importable from owning venv')"
+          test -f "$FAKE_HH/plugins/hermes-mobile-qr/qr_code.html"
       - name: Verify deployed layout
         run: |
           P="$FAKE_HH/plugins/hermes-mobile-qr"
@@ -87,13 +97,18 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - name: Build sandbox
+      - name: Build sandbox (venv + deps pre-provisioned like the agent env)
+        # Real Termux hermes lives in a venv whose env ALREADY provides
+        # pyyaml/qrcode/aiohttp (that is why the installer skips pip there).
+        # Model exactly that: deps pre-installed into the sandbox venv.
         run: |
           SB="$PWD/.ci-sandbox"
-          mkdir -p "$SB/bin" "$SB/mod" "$SB/home"
+          mkdir -p "$SB/mod" "$SB/home"
           printf 'import os\n\ndef get_hermes_home():\n    return os.environ["FAKE_HH"]\n' > "$SB/mod/hermes_constants.py"
-          printf '#!/usr/bin/env python3\nimport sys\nsys.exit(0)\n' > "$SB/bin/hermes"
-          chmod +x "$SB/bin/hermes"
+          python3 -m venv "$SB/venv"
+          "$SB/venv/bin/pip" install -q pyyaml qrcode
+          printf '#!%s/bin/python3\nimport sys\nsys.exit(0)\n' "$SB/venv" > "$SB/venv/bin/hermes"
+          chmod +x "$SB/venv/bin/hermes"
           touch "$SB/home/config.yaml"
           echo "FAKE_HH=$SB/home" >> "$GITHUB_ENV"
           echo "SANDBOX=$SB" >> "$GITHUB_ENV"
@@ -101,13 +116,15 @@ jobs:
         env:
           TERMUX_VERSION: '0.114.0'
         run: |
-          PATH="$SANDBOX/bin:$PATH" PYTHONPATH="$SANDBOX/mod" bash install.sh | tee termux-run.log
+          PATH="$SANDBOX/venv/bin:$PATH" PYTHONPATH="$SANDBOX/mod" bash install.sh | tee termux-run.log
           grep -q "Installation complete" termux-run.log
       - name: Verify deployed layout despite skipped pip
         run: |
           P="$FAKE_HH/plugins/hermes-mobile-qr"
           test -f "$P/plugin.yaml"
           test -f "$P/hermes_mobile_plugin/cli.py"
+          test -f "$P/qr_code.html"
+          "$SANDBOX/venv/bin/python3" -c "import yaml, qrcode; print('Termux path: agent-provided deps suffice')"
       - name: Clean up sandbox daemons
         if: always()
         run: pkill -f 'hermes_mobile_plugin.supervisor' || true
