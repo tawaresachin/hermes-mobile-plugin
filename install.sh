@@ -18,17 +18,48 @@ echo "================================="
 # XDG dirs on macOS, %LOCALAPPDATA%\hermes on Windows/WSL). A bare python3
 # from PATH is frequently a DIFFERENT interpreter than the one hermes runs
 # on — installing there silently does nothing.
+# Validate that a candidate is actually a working Python (a `#!/bin/bash`
+# wrapper or a broken shim must never become HERMES_PY).
+is_py() { "$1" -c "import sys" >/dev/null 2>&1; }
+
 HERMES_BIN="$(command -v hermes 2>/dev/null || true)"
 HERMES_PY=""
 if [ -n "$HERMES_BIN" ]; then
     BIN_DIR="$(cd "$(dirname "$HERMES_BIN")" && pwd)"
+    # 1) Interpreter sitting next to the shim (venv bin layouts).
     for cand in \
         "$BIN_DIR/python3" \
         "$BIN_DIR/python" \
         "$BIN_DIR/../hermes-agent/venv/bin/python3" \
         "$BIN_DIR/../venv/bin/python3"; do
-        if [ -x "$cand" ]; then HERMES_PY="$cand"; break; fi
+        if [ -x "$cand" ] && is_py "$cand"; then HERMES_PY="$cand"; break; fi
     done
+    # 2) The shim's own shebang — the most precise source on venv, pipx and
+    # Termux installs, where `hermes` is a console script whose first line
+    # names the interpreter that actually owns it.
+    if [ -z "$HERMES_PY" ]; then
+        # Trailing \r stripped: a CRLF checkout would otherwise make the
+        # interpreter name unresolvable ("python\r" -> command not found).
+        shebang="$(head -n 1 "$HERMES_BIN" 2>/dev/null || true)"
+        shebang="${shebang%$'\r'}"
+        case "$shebang" in
+            "#!"*)
+                interp="${shebang#\#!}"
+                interp="${interp# }"
+                case "$interp" in
+                    "/usr/bin/env "*)
+                        interp="${interp#/usr/bin/env }"
+                        interp="${interp%% *}"
+                        interp="$(command -v "$interp" 2>/dev/null || true)"
+                        ;;
+                esac
+                interp="${interp%$'\r'}"
+                if [ -n "$interp" ] && [ -x "$interp" ] && is_py "$interp"; then
+                    HERMES_PY="$interp"
+                fi
+                ;;
+        esac
+    fi
 fi
 if [ -z "$HERMES_PY" ] && command -v python3 &> /dev/null; then
     # No hermes-owned interpreter found; a bare python3 can still resolve
@@ -47,9 +78,12 @@ PYTHON_VERSION=$("$HERMES_PY" -c "import sys; print(f'{sys.version_info.major}.{
 echo "✅ Hermes Agent found (Python $PYTHON_VERSION)"
 
 # Resolve the REAL Hermes home through hermes-agent itself — never guess it.
-SOURCE_DIR_BEFORE_HOME="$SOURCE_DIR"
+# hermes_constants is hermes-agent's own module, importable from the owning
+# interpreter; the plugin's src never provided it (the old sys.path.insert
+# here was cargo cult and, worse, interpolated the source path into the -c
+# string — a checkout path containing a quote broke the whole installer).
 HERMES_HOME_DIR=$("$HERMES_PY" -c \
-    "import sys, pathlib; sys.path.insert(0, r'$SOURCE_DIR_BEFORE_HOME/src'); import hermes_constants; print(pathlib.Path(hermes_constants.get_hermes_home()))" 2>/dev/null || true)
+    "import pathlib, hermes_constants; print(pathlib.Path(hermes_constants.get_hermes_home()))" 2>/dev/null || true)
 if [ -z "$HERMES_HOME_DIR" ]; then
     echo "❌ Could not resolve the Hermes home directory."
     echo "   Run 'hermes' once to initialize configuration, then retry."
@@ -70,7 +104,7 @@ echo "✅ Hermes config found"
 if [ -z "${TERMUX_VERSION:-}" ]; then
     echo ""
     echo "🔧 Installing Python dependencies (pyyaml, qrcode)..."
-    "$HERMES_PY" -m pip install --quiet "pyyaml>=6.0" "qrcode>=7.4" || \
+    "$HERMES_PY" -m pip install --quiet "pyyaml>=6.0" "qrcode>=7.4" "aiohttp>=3.8" || \
         echo "⚠️  pip install failed - if Hermes Agent already provides these, ignore this."
 fi
 
@@ -113,7 +147,7 @@ echo "✅ Installation complete!"
 echo ""
 echo "Next steps:"
 echo "  1. Hermes Agent will auto-generate QR on startup"
-echo "  2. Run 'hermes-mobile-qr' anytime to regenerate"
+echo "  2. Run 'hermes-mobile-plugin qr' anytime to regenerate"
 echo "  3. Install Hermes Mobile APK on your phone"
 echo "  4. Scan QR code in app Settings → Scan QR"
 echo ""

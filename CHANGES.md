@@ -1,5 +1,30 @@
 # Hermes Mobile QR Plugin
 
+## 0.0.12 — POSIX audit fixes (Linux / macOS / Termux)
+
+Critical line-by-line audit of everything the Windows-only machine could
+not exercise:
+
+- **`install.sh` shipped CRLF in the working tree** — a `bash install.sh`
+  on stock Linux/macOS/Termux dies on line 1 (`$'\r': command not found`).
+  Converted to pure LF; committed blobs were verified already LF, and a
+  new `.gitattributes` enforces `*.sh eol=lf` / `*.bat eol=crlf` at
+  checkout so the two can never regress through editor/autocrlf settings.
+- **macOS update button 500'd**: `update_routes.py` unconditionally
+  prefixed `setsid`, which macOS/BSD do not ship. `start_new_session=True`
+  already detaches via the setsid() syscall, so the binary is now used
+  only on Linux/Termux (where the perl SIGCHLD reset is also needed).
+- **`aiohttp` was never declared** — the plugin imports it directly but
+  relied on hermes-agent's environment having it. Now declared in
+  `pyproject.toml` and installed by both shell installers.
+- **Locator quoting hardening (install.sh)**: the home-resolution one-liner
+  interpolated `$SOURCE_DIR` into a Python string (a checkout path
+  containing a quote broke the installer); the shebang branch now strips
+  `\r` from CRLF checkouts and validates candidates are real Pythons.
+- **Full POSIX dry-run verification**: `install.sh` executed end-to-end
+  (exit 0) in a sandboxed fake Hermes home with a shebang-based venv shim,
+  including the CRLF-shim `\r`-stripping branch; 53/53 tests pass.
+
 ## 0.0.11 — Real-machine install fixes (Windows verified end-to-end)
 
 Found by actually running the installer on a live Windows machine with

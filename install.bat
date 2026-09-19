@@ -62,7 +62,7 @@ REM Install Python dependencies (pyyaml + qrcode) into the SAME interpreter
 REM Hermes Agent runs with.
 echo.
 echo 🔧 Installing Python dependencies...
-"%HERMES_PY%" -m pip install --quiet "pyyaml>=6.0" "qrcode>=7.4"
+"%HERMES_PY%" -m pip install --quiet "pyyaml>=6.0" "qrcode>=7.4" "aiohttp>=3.8"
 
 REM Install plugin files to Hermes plugins directory. The quoted destination
 REM has the backslash OUTSIDE the quotes — the old line had it inside

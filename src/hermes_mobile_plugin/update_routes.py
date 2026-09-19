@@ -216,12 +216,24 @@ async def _update_apply_route(request: web.Request) -> web.Response:
             f"{restart_cmd} 2>&1"
         )
         import shutil
-        if shutil.which("perl"):
-            cmd = ["setsid", "perl", "-e",
-                   r'$SIG{CHLD}="DEFAULT"; exec @ARGV',
-                   "bash", "-c", script]
+        if shutil.which("setsid"):
+            # Linux/Termux. The Termux host runs with SIGCHLD=IGNORE; a
+            # setsid child inherits the disposition and `hermes update`'s
+            # git-remote-https child dies (waitpid failure -> exit 1, no
+            # code swap). The perl wrapper resets it to the default handler
+            # before exec'ing. Skipped on hosts without perl.
+            if shutil.which("perl"):
+                cmd = ["setsid", "perl", "-e",
+                       r'$SIG{CHLD}="DEFAULT"; exec @ARGV',
+                       "bash", "-c", script]
+            else:
+                cmd = ["setsid", "bash", "-c", script]
         else:
-            cmd = ["setsid", "bash", "-c", script]
+            # macOS/BSD ship no setsid BINARY — start_new_session below
+            # already detaches via the setsid() syscall, so plain bash is
+            # fully detached there. (The old code always prefixed setsid,
+            # which made the mobile update button 500 on every Mac.)
+            cmd = ["bash", "-c", script]
         detach = {"start_new_session": True}
     try:
         with open(_log_path, "ab") as logf:

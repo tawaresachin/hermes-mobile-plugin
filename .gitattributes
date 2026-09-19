@@ -1,0 +1,7 @@
+# Shell installers MUST stay LF (a CRLF checkout makes `bash install.sh`
+# fail with "\r: command not found" on every Linux/macOS/Termux host) and
+# batch files MUST stay CRLF (cmd.exe mis-parses LF-only .bat in for/if
+# blocks). Enforce both at checkout so platform bugs can't ride in through
+# git autocrlf settings.
+*.sh text eol=lf
+*.bat text eol=crlf
