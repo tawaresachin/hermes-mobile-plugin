@@ -1,0 +1,63 @@
+name: Auto-tag release
+
+# plugin.yaml is the single source of the version string. When a push to
+# main changes it to a version with no tag yet, tag it and open the
+# GitHub Release — which chains CI (build + verify + attach artifacts)
+# and the PyPI trusted-publishing workflow automatically. Same-version
+# content changes are inert.
+on:
+  push:
+    branches: [main]
+    paths: ['plugin.yaml']
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  tag:
+    name: tag + release when plugin.yaml's version is untagged
+    runs-on: ubuntu-latest
+    outputs:
+      tag: ${{ steps.prep.outputs.tag }}
+      created: ${{ steps.prep.outputs.created }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - id: prep
+        run: |
+          VER="$(sed -n 's/^version:[[:space:]]*"\{0,1\}\([^"[:space:]]*\)"\{0,1\}.*/\1/p' plugin.yaml | head -1)"
+          test -n "$VER" || { echo "::error::no version in plugin.yaml"; exit 1; }
+          TAG="v$VER"
+          if git rev-parse -q --verify "refs/tags/$TAG" >/dev/null; then
+            echo "tag $TAG already exists — nothing to do"
+            echo "created=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "created=true" >> "$GITHUB_OUTPUT"
+            echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+          fi
+      - name: Extract release notes from CHANGES.md
+        if: steps.prep.outputs.created == 'true'
+        run: |
+          VER="${{ steps.prep.outputs.tag }}"
+          VER="${VER#v}"
+          # Trailing ( |$) so 0.0.1 cannot prefix-match 0.0.12's heading
+          awk -v ver="$VER" '
+            $0 ~ "^## " ver "( |$)" {f=1; next}
+            f && /^## / {exit}
+            f {print}
+          ' CHANGES.md > release-notes.md
+          test -s release-notes.md || echo "Release $VER" > release-notes.md
+      - name: Create tag + GitHub Release
+        if: steps.prep.outputs.created == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git tag -a "${{ steps.prep.outputs.tag }}" -m "${{ steps.prep.outputs.tag }} (versioned by plugin.yaml)"
+          git push origin "${{ steps.prep.outputs.tag }}"
+          gh release create "${{ steps.prep.outputs.tag }}" \
+            --title "${{ steps.prep.outputs.tag }}" \
+            --notes-file release-notes.md

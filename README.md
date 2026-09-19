@@ -2,6 +2,7 @@
 
 <p align="center">
   <img src="https://img.shields.io/github/v/tag/tawaresachin/hermes-mobile-plugin?label=version&color=blue&style=for-the-badge" alt="version">
+  <img src="https://img.shields.io/github/actions/workflow/status/tawaresachin/hermes-mobile-plugin/ci.yml?branch=main&label=CI&style=for-the-badge" alt="CI">
   <img src="https://img.shields.io/badge/License-MIT-green?style=for-the-badge" alt="MIT">
   <img src="https://img.shields.io/badge/platforms-Windows%20%7C%20macOS%20%7C%20Linux%20%7C%20Android-blueviolet?style=for-the-badge" alt="platforms">
   <img src="https://img.shields.io/badge/Python-3.10+-yellow?style=for-the-badge" alt="python">

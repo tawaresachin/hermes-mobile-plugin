@@ -1,0 +1,48 @@
+name: Publish to PyPI
+
+# Fires on every published GitHub Release (the auto-tagger creates those)
+# and on demand. Uses PyPI TRUSTED PUBLISHING (OIDC): no API token is
+# stored anywhere — PyPI must have a matching trusted publisher entry:
+#   owner tawaresachin · repo hermes-mobile-plugin · workflow pypi.yml
+#   environment pypi
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+
+jobs:
+  pypi:
+    if: github.event_name == 'workflow_dispatch' || startsWith(github.event.release.tag_name, 'v')
+    name: build and upload to PyPI
+    runs-on: ubuntu-latest
+    environment: pypi
+    permissions:
+      # Trusted publishing REQUIRES id-token: write; contents is for checkout.
+      id-token: write
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.release.tag_name || github.ref }}
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Build wheel + sdist
+        run: |
+          python -m pip install -U build
+          python -m build
+      - name: Verify artifact version matches the tag
+        if: github.event_name == 'release'
+        run: |
+          python - <<'PY'
+          import glob, re, zipfile
+
+          tag = "${{ github.event.release.tag_name }}".lstrip("v")
+          wheel = glob.glob("dist/*.whl")[0]
+          manifest = zipfile.ZipFile(wheel).read("hermes_mobile_plugin/plugin.yaml").decode()
+          m = re.search(r'^version:\s*"?([^"\s]+)"?', manifest, re.M)
+          assert m and m.group(1) == tag, f"wheel manifest says {m and m.group(1)}, tag says {tag}"
+          print(f"OK: {wheel} carries version {tag}")
+          PY
+      - name: Upload to PyPI (trusted publishing)
+        uses: pypa/gh-action-pypi-publish@release/v1
