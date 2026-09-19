@@ -1,0 +1,220 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+    tags: ['v*']
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  tests:
+    name: pytest on ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install package + test deps
+        run: |
+          python -m pip install -U pip
+          python -m pip install -e ".[dev]" pytest-asyncio
+      - name: Run test suite
+        run: python -m pytest tests/ -q
+
+  install-sh:
+    # Sandboxed END-TO-END dry-run of the POSIX installer on real Linux and
+    # macOS: fake `hermes` shim with a shebang, fake hermes_constants, fake
+    # Hermes home. Exercises the locator, home resolution, deploy, QR and
+    # supervisor spawn without touching any real environment.
+    name: install.sh dry-run on ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Line endings + syntax (CRLF would kill bash on line 1)
+        run: |
+          bash -n install.sh
+          if grep -q "$(printf '\r')" install.sh; then
+            echo "::error::install.sh contains CR — bash on POSIX hosts dies on line 1"
+            exit 1
+          fi
+          echo "install.sh is pure LF and parses"
+      - name: Build sandbox (fake hermes + hermes_constants + home)
+        run: |
+          SB="$PWD/.ci-sandbox"
+          mkdir -p "$SB/bin" "$SB/mod" "$SB/home"
+          printf 'import os\n\ndef get_hermes_home():\n    return os.environ["FAKE_HH"]\n' > "$SB/mod/hermes_constants.py"
+          printf '#!/usr/bin/env python3\nimport sys\nsys.exit(0)\n' > "$SB/bin/hermes"
+          chmod +x "$SB/bin/hermes"
+          touch "$SB/home/config.yaml"
+          echo "FAKE_HH=$SB/home" >> "$GITHUB_ENV"
+          echo "SANDBOX=$SB" >> "$GITHUB_ENV"
+      - name: Run install.sh end-to-end against the sandbox
+        env:
+          TERMUX_VERSION: ''
+        run: |
+          PATH="$SANDBOX/bin:$PATH" PYTHONPATH="$SANDBOX/mod" bash install.sh
+      - name: Verify deployed layout
+        run: |
+          P="$FAKE_HH/plugins/hermes-mobile-qr"
+          test -f "$P/plugin.yaml"
+          test -f "$P/hermes_mobile_plugin/cli.py"
+          test -f "$P/__init__.py"
+          test -f "$P/qr_code.html"
+          echo "deployed tree + QR verified at $P"
+      - name: Clean up sandbox daemons
+        if: always()
+        run: pkill -f 'hermes_mobile_plugin.supervisor' || true
+
+  install-sh-termux:
+    # The Termux code path: pip is SKIPPED (NDK toolchain risk) and install
+    # must still complete. TERMUX_VERSION flips the exact branch the real
+    # Termux host takes — deterministic, no brittle termux-docker needed.
+    name: install.sh Termux path (pip skipped)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build sandbox
+        run: |
+          SB="$PWD/.ci-sandbox"
+          mkdir -p "$SB/bin" "$SB/mod" "$SB/home"
+          printf 'import os\n\ndef get_hermes_home():\n    return os.environ["FAKE_HH"]\n' > "$SB/mod/hermes_constants.py"
+          printf '#!/usr/bin/env python3\nimport sys\nsys.exit(0)\n' > "$SB/bin/hermes"
+          chmod +x "$SB/bin/hermes"
+          touch "$SB/home/config.yaml"
+          echo "FAKE_HH=$SB/home" >> "$GITHUB_ENV"
+          echo "SANDBOX=$SB" >> "$GITHUB_ENV"
+      - name: Run install.sh with TERMUX_VERSION set (skips pip)
+        env:
+          TERMUX_VERSION: '0.114.0'
+        run: |
+          PATH="$SANDBOX/bin:$PATH" PYTHONPATH="$SANDBOX/mod" bash install.sh | tee termux-run.log
+          grep -q "Installation complete" termux-run.log
+      - name: Verify deployed layout despite skipped pip
+        run: |
+          P="$FAKE_HH/plugins/hermes-mobile-qr"
+          test -f "$P/plugin.yaml"
+          test -f "$P/hermes_mobile_plugin/cli.py"
+      - name: Clean up sandbox daemons
+        if: always()
+        run: pkill -f 'hermes_mobile_plugin.supervisor' || true
+
+  install-bat:
+    # Windows installer dry-run: a throwaway venv provides both hermes.exe
+    # and python.exe side by side (the locator's primary branch), fake
+    # hermes-constants resolves a redirected home, and the final `pause`
+    # is satisfied with < NUL.
+    name: install.bat dry-run
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: CRLF check (cmd.exe mis-parses LF-only .bat in for/if blocks)
+        shell: pwsh
+        run: |
+          $text = [IO.File]::ReadAllText("$PWD\install.bat")
+          if ($text -notmatch "`r`n") { Write-Error "::error::install.bat must be CRLF"; exit 1 }
+          if ($text -match "(?<!`r)`n") { Write-Error "::error::install.bat has bare LF lines"; exit 1 }
+          Write-Host "install.bat is CRLF"
+      - name: Build sandbox venv (hermes.exe + python.exe + fake hermes_constants)
+        shell: pwsh
+        run: |
+          python -m venv .ci-venv
+          New-Item -ItemType Directory -Force -Path fakepkg, fakeconst, fake-home | Out-Null
+          @'
+          [project]
+          name = "fake-hermes-cli"
+          version = "0.0.0"
+          [project.scripts]
+          hermes = "fake_hermes:main"
+          [build-system]
+          requires = ["setuptools"]
+          build-backend = "setuptools.build_meta"
+          '@ | Set-Content fakepkg/pyproject.toml
+          @'
+          def main():
+              raise SystemExit(0)
+          '@ | Set-Content fakepkg/fake_hermes.py
+          @'
+          [build-system]
+          requires = ["setuptools"]
+          build-backend = "setuptools.build_meta"
+          '@ | Set-Content fakeconst/pyproject.toml
+          @'
+          import os
+
+          def get_hermes_home():
+              return os.environ["FAKE_HH"]
+          '@ | Set-Content fakeconst/hermes_constants.py
+          $py = ".ci-venv\Scripts\python.exe"
+          & $py -m pip install -q ./fakepkg ./fakeconst
+          $hh = (Convert-Path .) + "\fake-home"
+          "FAKE_HH=$hh" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+          New-Item -ItemType File -Force -Path "$hh\config.yaml" | Out-Null
+      - name: Run install.bat end-to-end against the sandbox
+        shell: cmd
+        run: |
+          REM The sandbox venv must own PATH so `where hermes` finds its shim
+          set "PATH=%CD%\.ci-venv\Scripts;%PATH%"
+          install.bat < NUL
+      - name: Verify deployed layout
+        shell: pwsh
+        run: |
+          $p = "$env:FAKE_HH\plugins\hermes-mobile-qr"
+          foreach ($f in "plugin.yaml", "hermes_mobile_plugin\cli.py", "__init__.py", "qr_code.html") {
+            if (-not (Test-Path "$p\$f")) { Write-Error "::error::missing $p\$f"; exit 1 }
+          }
+          Write-Host "deployed tree + QR verified at $p"
+
+  release:
+    # On a version tag: build the wheel + sdist, verify the bundled manifest
+    # version matches the tag (the shadowing bug that regressed versions is
+    # dead), and attach the artifacts to the GitHub Release.
+    name: build + verify + attach wheel
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: [tests, install-sh, install-sh-termux, install-bat]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Build wheel + sdist
+        run: |
+          python -m pip install -U build
+          python -m build
+      - name: Verify artifact version matches the tag
+        run: |
+          python - <<'PY'
+          import glob, os, re, zipfile
+
+          tag = os.environ["GITHUB_REF_NAME"].lstrip("v")
+          wheel = glob.glob("dist/*.whl")[0]
+          manifest = zipfile.ZipFile(wheel).read("hermes_mobile_plugin/plugin.yaml").decode()
+          m = re.search(r'^version:\s*"?([^"\s]+)"?', manifest, re.M)
+          assert m and m.group(1) == tag, f"wheel manifest says {m and m.group(1)}, tag says {tag}"
+          print(f"OK: {wheel} carries version {tag}")
+          PY
+      - name: Generate SHA256SUMS
+        run: |
+          cd dist
+          sha256sum *.whl *.tar.gz > SHA256SUMS
+          cat SHA256SUMS
+      - name: Attach artifacts to the GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: dist/*

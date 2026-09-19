@@ -36,11 +36,14 @@ for /f "tokens=2 delims= " %%a in ('"%HERMES_PY%" --version') do set PYTHON_VERS
 echo ✅ Hermes Agent found (Python %PYTHON_VERSION%)
 
 REM Resolve the REAL Hermes home through hermes-agent itself — never guess it.
-REM Written to a temp file and read with set /p instead of for /f: for /f runs
-REM via cmd /c, whose legacy quote-stripping mangles a command that STARTS
-REM with a quoted exe path containing spaces.
+REM No sys.path games: hermes_constants belongs to hermes-agent (already
+REM importable from the owning interpreter) — interpolating this checkout's
+REM path into the -c string was cargo cult and broke on paths containing
+REM quotes. Written to a temp file and read with set /p instead of for /f:
+REM for /f runs via cmd /c, whose legacy quote-stripping mangles a command
+REM that STARTS with a quoted exe path containing spaces.
 set "HERMES_HOME_FILE=%TEMP%\hermes_home_hmq.txt"
-"%HERMES_PY%" -c "import sys, pathlib; sys.path.insert(0, r'%~dp0src'); import hermes_constants; print(pathlib.Path(hermes_constants.get_hermes_home()))" > "%HERMES_HOME_FILE%" 2>nul
+"%HERMES_PY%" -c "import pathlib, hermes_constants; print(pathlib.Path(hermes_constants.get_hermes_home()))" > "%HERMES_HOME_FILE%" 2>nul
 set "HERMES_HOME_DIR="
 set /p HERMES_HOME_DIR=<"%HERMES_HOME_FILE%"
 del "%HERMES_HOME_FILE%" >nul 2>nul

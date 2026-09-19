@@ -40,12 +40,12 @@ read from the agent's API. The plugin adds routes, not forks.
 ## Install
 
 **[Download the latest release →](https://github.com/tawaresachin/hermes-mobile-plugin/releases/latest)**
-(one signed `py3-none-any` wheel + sdist, `SHA256SUMS` + GPG signature included)
+(every release ships a pure-Python `py3-none-any` wheel + sdist with `SHA256SUMS` checksums, built and version-verified by CI)
 
 Into the same Python environment your Hermes Agent runs in (its venv):
 
 ```bash
-pip install git+https://github.com/tawaresachin/hermes-mobile-plugin@v0.0.6
+pip install git+https://github.com/tawaresachin/hermes-mobile-plugin@v0.0.12
 # or from the release page: pip install hermes_mobile_plugin-<ver>-py3-none-any.whl
 hermes-mobile-plugin install      # registers plugin + generates the QR
 ```
@@ -54,7 +54,7 @@ The plugin is pure Python — the one wheel runs unchanged on Windows, macOS, Li
 Termux (native deps resolve per-OS from PyPI at install time). Not on PyPI; GitHub Releases
 is the release channel, which matches how Hermes Agent itself updates from git.
 
-`install` copies the plugin into `~/.hermes/plugins/hermes-mobile-qr` and (re)starts the gateway.
+`install` copies the plugin into the Hermes home your agent actually resolves (`~/.hermes` on Linux/Termux, XDG dirs on macOS, `%LOCALAPPDATA%\hermes` on Windows) and (re)starts the gateway.
 Then grab the [Hermes Mobile APK](https://github.com/tawaresachin/hermes-mobile/releases), open
 **Settings → Connect with QR**, and scan. LAN, Tailscale, or any tunnel — the QR carries the
 address your phone can actually reach.
@@ -88,7 +88,11 @@ Mounted on the api_server platform; the mobile app is the client.
 Runs wherever Hermes Agent runs — **Windows, macOS, Linux, Termux/Android** — with per-platform
 handling for process detachment, single-instance locks, launcher lookup (`hermes.exe` included),
 and keep-awake (termux-wake-lock / caffeine / powershell), degrading honestly when a mechanism
-doesn't exist. 52 tests cover the platform seams and the scripted-install paths.
+doesn't exist. 53 tests cover the platform seams and the scripted-install paths.
+
+**Termux note:** the shell installer skips pip there (it can trigger NDK toolchain builds);
+Hermes Agent's own Termux environment must provide `pyyaml`, `qrcode` and `aiohttp` — the
+standard agent install does.
 
 ## Development
 
@@ -96,8 +100,13 @@ doesn't exist. 52 tests cover the platform seams and the scripted-install paths.
 git clone https://github.com/tawaresachin/hermes-mobile-plugin.git
 cd hermes-mobile-plugin
 pip install -e ".[dev]"
-PYTHONPATH=src pytest            # 52 tests
+PYTHONPATH=src pytest            # 53 tests
 ```
+
+CI (`.github/workflows/ci.yml`) runs the suite on ubuntu/macos/windows on every push, plus
+sandboxed end-to-end dry-runs of `install.sh` (Linux + macOS, including the Termux skip-pip
+path) and `install.bat` (Windows, fake venv + redirected home). Version tags additionally
+build the wheel, verify the bundled manifest matches the tag, and attach it to the release.
 
 Releases are tagged `v<version>`; `plugin.yaml` is the single source of the version string
 (`PLUGIN_VERSION` derives from it — packaging metadata can't drift).
