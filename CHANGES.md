@@ -1,5 +1,28 @@
 # Hermes Mobile QR Plugin
 
+## 0.0.10 — Fix scripted installs on every OS
+
+- **`hermes-mobile-install` was dead code**: `pyproject.toml` pointed the
+  console script at `cli:install_plugin`, which never existed — every
+  scripted installer died on its final step with ImportError. Implemented
+  `deploy_plugin_files()` + `install_plugin()` in `cli.py`; the .bat/.sh
+  installers and the console script now share one deployment path.
+- **Windows (`install.bat`)**: fixed the malformed `copy` destination
+  (backslash inside the variable name), stopped overwriting the loader
+  entry point `__init__.py` with a stub missing `register()` (which made
+  every audio/system route 404), installs `pyyaml`/`qrcode`, and now uses
+  the real `hermes-mobile-plugin` console script (with a
+  `python -m hermes_mobile_plugin.cli` fallback).
+- **POSIX/Termux (`install.sh`)**: fixed `cp -r` nesting the package inside
+  itself on re-install (`hermes_mobile_plugin/hermes_mobile_plugin`), fixed
+  the broken final step (`hermes-mobile-qr` never existed; module fallback
+  only worked from the repo root), skips pip on Termux.
+- **Wheel installs**: `PLUGIN_VERSION` no longer reports `0.0.0+unknown` —
+  falls back to package metadata when no `plugin.yaml` is on disk.
+- **Windows legacy codepages**: the CLI reconfigures stdio to UTF-8 so
+  piped/redirected output no longer crashes with `UnicodeEncodeError`.
+- `cmd_install` now performs the deployment itself (was QR+supervisor only).
+
 ## Changes Made (Addressing All Review Points)
 
 ### 1. Plugin Code (`src/hermes_mobile_plugin/__init__.py`)

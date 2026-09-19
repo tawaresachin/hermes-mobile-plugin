@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "hermes-mobile-plugin"
-version = "0.0.9"
+version = "0.0.10"
 description = "Hermes Mobile QR Plugin - Generates QR code for direct 8642 connection"
 readme = "README.md"
 requires-python = ">=3.10"
@@ -28,6 +28,12 @@ hermes-mobile-install = "hermes_mobile_plugin.cli:install_plugin"
 
 [tool.setuptools.packages.find]
 where = ["src"]
+
+[tool.setuptools.package-data]
+# Ship the loader manifest inside the wheel so `hermes-mobile-install`
+# works from a pip install (no repo checkout) — the deploy code looks for
+# plugin.yaml beside the package when the repo root is not there.
+hermes_mobile_plugin = ["plugin.yaml"]
 
 [tool.black]
 line-length = 88

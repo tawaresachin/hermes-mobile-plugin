@@ -12,7 +12,9 @@ def _read_plugin_version() -> str:
     """Version is read from plugin.yaml — the manifest the loader and the
     release tool both trust. Hardcoding it here is what let the two numbers
     drift (yaml 0.0.46 vs this 0.0.6). Walk up for plugin.yaml so it resolves
-    from src/ checkout, installed package, or the deployed plugin dir."""
+    from src/ checkout, installed package, or the deployed plugin dir.
+    A wheel install carries no manifest, so fall back to the package
+    metadata — the value pip records at build time (mirrors plugin.yaml)."""
     import re
 
     for parent in Path(__file__).resolve().parents:
@@ -26,7 +28,11 @@ def _read_plugin_version() -> str:
                     return m.group(1)
             except OSError:
                 pass
-    return "0.0.0+unknown"
+    try:
+        from importlib import metadata
+        return metadata.version("hermes-mobile-plugin")
+    except Exception:
+        return "0.0.0+unknown"
 
 
 PLUGIN_VERSION: Final[str] = _read_plugin_version()

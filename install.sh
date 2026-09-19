@@ -20,6 +20,16 @@ fi
 PYTHON_VERSION=$(python3 -c "import sys; print(f'{sys.version_info.major}.{sys.version_info.minor}')")
 echo "✅ Python $PYTHON_VERSION found"
 
+# Dependencies. Termux: the hermes-agent environment already provides both;
+# a bare pip install there risks building C extensions against the wrong
+# NDK toolchain, so skip it.
+if [ -z "${TERMUX_VERSION:-}" ]; then
+    echo ""
+    echo "🔧 Installing Python dependencies (pyyaml, qrcode)..."
+    python3 -m pip install --quiet "pyyaml>=6.0" "qrcode>=7.4" || \
+        echo "⚠️  pip install failed - if Hermes Agent already provides these, ignore this."
+fi
+
 # Check Hermes config
 HERMES_CONFIG="$HOME/.hermes/config.yaml"
 if [[ ! -f "$HERMES_CONFIG" ]]; then
@@ -34,8 +44,11 @@ echo ""
 echo "🔧 Installing plugin to Hermes..."
 mkdir -p "$PLUGIN_DIR"
 
-# Copy plugin files
-cp -r "$SOURCE_DIR/src/hermes_mobile_plugin" "$PLUGIN_DIR/hermes_mobile_plugin"
+# Copy plugin files. NOTE the trailing "/.": a plain `cp -r src dest` NESTS
+# the package inside itself (hermes_mobile_plugin/hermes_mobile_plugin) when
+# the destination already exists — which is exactly what broke every upgrade.
+mkdir -p "$PLUGIN_DIR/hermes_mobile_plugin"
+cp -R "$SOURCE_DIR/src/hermes_mobile_plugin/." "$PLUGIN_DIR/hermes_mobile_plugin/"
 cp "$SOURCE_DIR/plugin.yaml" "$PLUGIN_DIR/"
 
 # Copy the real __init__.py (forwards BOTH register(ctx) and create_plugin).
@@ -46,12 +59,17 @@ cp "$SOURCE_DIR/__init__.py" "$PLUGIN_DIR/__init__.py"
 echo "✅ Plugin installed to $PLUGIN_DIR"
 
 # Generate QR code
+# `hermes-mobile-qr` was never a real console script (only hermes-mobile-plugin
+# and hermes-mobile-install exist in pyproject.toml), and the module fallback
+# only worked if the package was importable from the current directory — so
+# the old final step failed on stock checkouts. The PYTHONPATH fallback below
+# always works.
 echo ""
 echo "📱 Generating QR code..."
-if command -v hermes-mobile-qr &> /dev/null; then
-    hermes-mobile-qr
+if command -v hermes-mobile-plugin &> /dev/null; then
+    hermes-mobile-plugin install
 else
-    python3 -m hermes_mobile_plugin.cli
+    PYTHONPATH="$SOURCE_DIR/src${PYTHONPATH:+:$PYTHONPATH}" python3 -m hermes_mobile_plugin.cli install
 fi
 
 echo ""

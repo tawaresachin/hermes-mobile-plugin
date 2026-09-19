@@ -1,16 +1,37 @@
 """CLI commands for Hermes Mobile Plugin."""
 
+# Windows legacy codepages (cp1252 & co.) cannot encode the emoji this CLI
+# prints; piped/redirected stdout is exactly where the active console encoding
+# bites. Reconfigure stdio to UTF-8 before anything prints — Python 3.7+.
+import io
+import sys as _sys
+for _stream in (_sys.stdout, _sys.stderr):
+    if (_stream is not None and hasattr(_stream, "reconfigure")
+            and getattr(_stream, "encoding", "utf-8").lower().replace("-", "") not in
+            ("utf8", "utf8mb4")):
+        try:
+            _stream.reconfigure(encoding="utf-8", errors="replace")
+        except (ValueError, OSError, AttributeError):
+            pass
+del io, _sys, _stream
+
 import argparse
 import logging
+import shutil
 import sys
-import threading
 import time
 from pathlib import Path
 
 from .config import load_hermes_config, validate_config
-from .constants import PLUGIN_NAME, PLUGIN_VERSION
+from .constants import GATEWAY_PORT, PLUGIN_DIR, PLUGIN_NAME, PLUGIN_VERSION
 from .qr_generator import generate_qr, print_connection_details
-from .supervisor import GatewaySupervisor, start_daemon
+from .supervisor import (
+    SUPERVISOR_PID_FILE,
+    ensure_running,
+    is_supervisor_running,
+    start_daemon,
+    terminate_pid,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -40,8 +61,20 @@ def cmd_install(args: argparse.Namespace) -> int:
         print("   ✅ Configuration valid")
     print()
 
-    # Step 2: Generate QR code
-    print("📷 Step 2/3: Generating QR code...")
+    # Step 2: Deploy plugin files into Hermes' plugins directory (the same
+    # deployment the .bat/.sh installers and hermes-mobile-install use).
+    print("📦 Step 2/3: Deploying plugin files...")
+    try:
+        copied = deploy_plugin_files(PLUGIN_DIR)
+        for path in copied:
+            print(f"   ✅ {path}")
+    except InstallError as e:
+        print(f"   ⚠️  Deployment failed: {e}")
+        print("   Continuing anyway...")
+    print()
+
+    # Step 3: Generate QR code
+    print("📷 Step 3/3: Generating QR code...")
     try:
         import asyncio
         output_path = asyncio.run(generate_qr(config, open_browser=False, save_file=True))
@@ -51,6 +84,9 @@ def cmd_install(args: argparse.Namespace) -> int:
         print("   Continuing anyway...")
     print()
 
+    # Step 4: Start supervisor
+    print("🛡️  Step 4/4: Starting 24x7 gateway supervisor...")
+
     # Step 3: Start supervisor
     print("🛡️  Step 3/3: Starting 24x7 gateway supervisor...")
 
@@ -58,8 +94,6 @@ def cmd_install(args: argparse.Namespace) -> int:
     # exiting). The old in-process daemon thread printed '24x7 monitoring'
     # and then died the moment cmd_install returned — a lie. ensure_running
     # is idempotent via the PID file + flock guard in the child.
-    from .supervisor import SUPERVISOR_PID_FILE, ensure_running, is_supervisor_running
-
     if is_supervisor_running():
         pid = int(SUPERVISOR_PID_FILE.read_text().strip()) if SUPERVISOR_PID_FILE.exists() else 0
         print(f"   ⚠️  Supervisor already running (PID: {pid})")
@@ -89,7 +123,7 @@ def cmd_install(args: argparse.Namespace) -> int:
     print("   hermes-mobile-plugin status      # Check supervisor status")
     print("   hermes-mobile-plugin supervisor  # Start supervisor manually")
     print("   hermes-mobile-plugin supervisor --stop  # Stop supervisor")
-    print("   tail -f ~/.hermes/logs/gateway_supervisor.log  # View logs")
+    print("   Get-Content ~/.hermes/logs/gateway_supervisor.log -Wait  # (PowerShell; on macOS/Linux: tail -f)")
     print()
 
     return 0
@@ -142,12 +176,8 @@ def cmd_status(args: argparse.Namespace) -> int:
     Returns:
         Exit code (0 if healthy, 1 if not).
     """
-    from .supervisor import SUPERVISOR_PID_FILE
-
     # Check supervisor (shared helper — os.kill-based probes signal the
     # process on Windows, which is exactly what we must not do here)
-    from .supervisor import is_supervisor_running
-    from .constants import GATEWAY_PORT, SUPERVISOR_PID_FILE
     if is_supervisor_running():
         print(f"✅ Supervisor running (PID: {SUPERVISOR_PID_FILE.read_text().strip()})")
     else:
@@ -178,8 +208,6 @@ def cmd_supervisor(args: argparse.Namespace) -> int:
     Returns:
         Exit code.
     """
-    from .supervisor import SUPERVISOR_PID_FILE
-
     if args.stop:
         # Stop supervisor (cross-platform terminate)
         if not SUPERVISOR_PID_FILE.exists():
@@ -212,6 +240,131 @@ def cmd_supervisor(args: argparse.Namespace) -> int:
         else:
             print("❌ Failed to start supervisor")
             return 1
+
+
+class InstallError(Exception):
+    """Raised when plugin deployment into Hermes' plugins dir fails."""
+    pass
+
+
+def deploy_plugin_files(target_dir: Path) -> list[Path]:
+    """Copy the plugin into Hermes' plugins directory.
+
+    THE single deployment implementation: install.bat, install.sh and the
+    pip-installed `hermes-mobile-install` script all land here, so the three
+    paths can never drift (drift is exactly what broke the old .bat: its
+    inline copy nested the package one level too deep and a malformed
+    copy destination). Works from a src/ checkout AND from an already-
+    deployed plugin dir (re-install/upgrade in place).
+
+    Layout produced (what the Hermes plugin loader expects):
+        <target>/__init__.py                  forwards register(ctx)
+        <target>/plugin.yaml                  loader manifest
+        <target>/hermes_mobile_plugin/...     the actual package
+
+    Returns the list of copied paths.
+
+    Raises:
+        InstallError: If the package or the manifest cannot be located.
+    """
+    here = Path(__file__).resolve()
+    package_src = here.parent.parent / "src" / "hermes_mobile_plugin"
+    if not (package_src / "__init__.py").is_file():
+        # Installed/deployed context: this module IS the package.
+        package_src = here.parent
+        if package_src.name != "hermes_mobile_plugin":
+            raise InstallError(
+                "Cannot locate the hermes_mobile_plugin package "
+                "(neither src/ layout nor installed package)"
+            )
+
+    manifest_src = here.parent.parent.parent / "plugin.yaml"
+    if not manifest_src.is_file():
+        for parent in package_src.parents:
+            if (parent / "plugin.yaml").is_file():
+                manifest_src = parent / "plugin.yaml"
+                break
+    if not manifest_src.is_file():
+        # Wheel install: the manifest ships inside the package (package-data
+        # in pyproject.toml), so the walk finds nothing and we use that copy.
+        bundled = package_src / "plugin.yaml"
+        if not bundled.is_file():
+            raise InstallError(
+                "plugin.yaml manifest not found (repo layout or installed package data)"
+            )
+        manifest_src = bundled
+
+    target_dir.mkdir(parents=True, exist_ok=True)
+    copied: list[Path] = []
+
+    pkg_dst = target_dir / "hermes_mobile_plugin"
+    if pkg_dst.exists():
+        shutil.rmtree(pkg_dst)
+    shutil.copytree(
+        package_src,
+        pkg_dst,
+        ignore=shutil.ignore_patterns("__pycache__", "*.pyc", ".pytest_cache", "plugin.yaml"),
+    )
+    copied.append(pkg_dst)
+
+    # Forwarder for the loader (register(ctx) + create_plugin) and the
+    # manifest the loader and _read_plugin_version both trust.
+    init_dst = target_dir / "__init__.py"
+    repo_init = package_src.parent / "__init__.py"
+    if repo_init.is_file():
+        shutil.copyfile(repo_init, init_dst)
+    else:
+        # Wheel install: generate the forwarder. It MUST forward register(ctx) —
+        # a stub without it makes the loader skip the plugin and every
+        # /api/* route 404s (the exact bug the old install.bat shipped).
+        init_dst.write_text(
+            '"""Hermes Mobile plugin loader forwarder (generated by install)."""\n'
+            "from hermes_mobile_plugin import register, create_plugin, PLUGIN_VERSION  # noqa: F401\n"
+            '__all__ = ["register", "create_plugin", "PLUGIN_VERSION"]\n',
+            encoding="utf-8",
+        )
+    copied.append(init_dst)
+
+    manifest_dst = target_dir / "plugin.yaml"
+    shutil.copyfile(manifest_src, manifest_dst)
+    copied.append(manifest_dst)
+
+    return copied
+
+
+def install_plugin(args: "argparse.Namespace | None" = None) -> int:
+    """Entry point for the `hermes-mobile-install` console script.
+
+    Deploys the plugin files into Hermes' plugins directory. The old
+    pyproject.toml pointed this script at cli:install_plugin, which never
+    existed — every scripted installer therefore died on its final step
+    with ImportError.
+    """
+    parser = argparse.ArgumentParser(
+        prog="hermes-mobile-install",
+        description="Deploy the Hermes Mobile plugin into Hermes' plugins directory",
+    )
+    parser.add_argument(
+        "--target",
+        default=None,
+        help="Override the target directory "
+             "(default: ~/.hermes/plugins/hermes-mobile-qr)",
+    )
+    ns = parser.parse_args() if args is None else args
+
+    target = Path(ns.target) if getattr(ns, "target", None) else PLUGIN_DIR
+    try:
+        copied = deploy_plugin_files(target)
+    except InstallError as e:
+        print(f"❌ Install failed: {e}", file=sys.stderr)
+        return 1
+    print("✅ Hermes Mobile plugin deployed:")
+    for path in copied:
+        print(f"   {path}")
+    print()
+    print("Next: restart Hermes Agent (or run 'hermes-mobile-plugin install')")
+    print("so the gateway picks up the plugin and generates the QR code.")
+    return 0
 
 
 def main():

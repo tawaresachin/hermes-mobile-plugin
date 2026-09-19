@@ -88,7 +88,7 @@ Mounted on the api_server platform; the mobile app is the client.
 Runs wherever Hermes Agent runs — **Windows, macOS, Linux, Termux/Android** — with per-platform
 handling for process detachment, single-instance locks, launcher lookup (`hermes.exe` included),
 and keep-awake (termux-wake-lock / caffeine / powershell), degrading honestly when a mechanism
-doesn't exist. 47 tests cover the platform seams.
+doesn't exist. 52 tests cover the platform seams and the scripted-install paths.
 
 ## Development
 
@@ -96,7 +96,7 @@ doesn't exist. 47 tests cover the platform seams.
 git clone https://github.com/tawaresachin/hermes-mobile-plugin.git
 cd hermes-mobile-plugin
 pip install -e ".[dev]"
-PYTHONPATH=src pytest            # 47 tests
+PYTHONPATH=src pytest            # 52 tests
 ```
 
 Releases are tagged `v<version>`; `plugin.yaml` is the single source of the version string
