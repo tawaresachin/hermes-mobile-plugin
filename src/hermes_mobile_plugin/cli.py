@@ -17,6 +17,7 @@ del io, _sys, _stream
 
 import argparse
 import logging
+import os
 import shutil
 import sys
 import time
@@ -29,6 +30,7 @@ from .supervisor import (
     SUPERVISOR_PID_FILE,
     ensure_running,
     is_supervisor_running,
+    read_supervisor_pid,
     start_daemon,
     terminate_pid,
 )
@@ -51,7 +53,7 @@ def cmd_install(args: argparse.Namespace) -> int:
     print()
 
     # Step 1: Validate config
-    print("📦 Step 1/3: Validating configuration...")
+    print("📦 Step 1/4: Validating configuration...")
     config = load_hermes_config()
     warnings = validate_config(config)
     if warnings:
@@ -63,7 +65,7 @@ def cmd_install(args: argparse.Namespace) -> int:
 
     # Step 2: Deploy plugin files into Hermes' plugins directory (the same
     # deployment the .bat/.sh installers and hermes-mobile-install use).
-    print("📦 Step 2/3: Deploying plugin files...")
+    print("📦 Step 2/4: Deploying plugin files...")
     try:
         copied = deploy_plugin_files(PLUGIN_DIR)
         for path in copied:
@@ -74,7 +76,7 @@ def cmd_install(args: argparse.Namespace) -> int:
     print()
 
     # Step 3: Generate QR code
-    print("📷 Step 3/3: Generating QR code...")
+    print("📷 Step 3/4: Generating QR code...")
     try:
         import asyncio
         output_path = asyncio.run(generate_qr(config, open_browser=False, save_file=True))
@@ -87,16 +89,13 @@ def cmd_install(args: argparse.Namespace) -> int:
     # Step 4: Start supervisor
     print("🛡️  Step 4/4: Starting 24x7 gateway supervisor...")
 
-    # Step 3: Start supervisor
-    print("🛡️  Step 3/3: Starting 24x7 gateway supervisor...")
-
     # Spawn the DETACHED watchdog (its own session, survives this CLI
     # exiting). The old in-process daemon thread printed '24x7 monitoring'
     # and then died the moment cmd_install returned — a lie. ensure_running
     # is idempotent via the PID file + flock guard in the child.
     if is_supervisor_running():
-        pid = int(SUPERVISOR_PID_FILE.read_text().strip()) if SUPERVISOR_PID_FILE.exists() else 0
-        print(f"   ⚠️  Supervisor already running (PID: {pid})")
+        pid = read_supervisor_pid()
+        print(f"   ⚠️  Supervisor already running (PID: {pid if pid and pid > 0 else 'locked'})")
     else:
         sup_pid = ensure_running()
         if sup_pid > 0:
@@ -179,7 +178,8 @@ def cmd_status(args: argparse.Namespace) -> int:
     # Check supervisor (shared helper — os.kill-based probes signal the
     # process on Windows, which is exactly what we must not do here)
     if is_supervisor_running():
-        print(f"✅ Supervisor running (PID: {SUPERVISOR_PID_FILE.read_text().strip()})")
+        pid = read_supervisor_pid()
+        print(f"✅ Supervisor running (PID: {pid if pid and pid > 0 else 'unknown (PID file locked)'})")
     else:
         print("❌ Supervisor not running")
 
@@ -209,21 +209,42 @@ def cmd_supervisor(args: argparse.Namespace) -> int:
         Exit code.
     """
     if args.stop:
-        # Stop supervisor (cross-platform terminate)
-        if not SUPERVISOR_PID_FILE.exists():
+        # Stop supervisor (cross-platform terminate). read_supervisor_pid
+        # returns -1 when a legacy supervisor's mandatory lock makes the PID
+        # file unreadable — still running, PID unknown — so fall back to
+        # process enumeration instead of crashing on read_text().
+        from .supervisor import (
+            find_supervisor_pids,
+            read_supervisor_pid,
+            terminate_pid,
+        )
+
+        pid = read_supervisor_pid()
+        if pid == 0:
             print("⚠️  Supervisor not running (no PID file)")
             return 0
-        try:
-            pid = int(SUPERVISOR_PID_FILE.read_text().strip())
-        except ValueError:
-            print("❌ Invalid PID file")
-            return 1
-        from .supervisor import terminate_pid
-        if not terminate_pid(pid):
-            print("⚠️  Supervisor not running")
+        if pid == -1:
+            pids = find_supervisor_pids()
+            pids = [p for p in pids if p != os.getpid()]
+            if not pids:
+                print("⚠️  Supervisor not running (stale locked PID file)")
+                try:
+                    SUPERVISOR_PID_FILE.unlink(missing_ok=True)
+                except OSError as e:
+                    print(f"⚠️  Could not remove stale PID file: {e}")
+                return 0
+            for p in pids:
+                terminate_pid(p)
+            print(f"✅ Supervisor stopped (PID(s): {', '.join(map(str, pids))})")
         else:
-            print("✅ Supervisor stopped")
-        SUPERVISOR_PID_FILE.unlink(missing_ok=True)
+            if not terminate_pid(pid):
+                print("⚠️  Supervisor not running")
+            else:
+                print("✅ Supervisor stopped")
+        try:
+            SUPERVISOR_PID_FILE.unlink(missing_ok=True)
+        except OSError as e:
+            print(f"⚠️  Could not remove PID file (supervisor may still be exiting): {e}")
         return 0
     else:
         # Start supervisor

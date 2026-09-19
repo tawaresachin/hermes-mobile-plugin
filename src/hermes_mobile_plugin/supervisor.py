@@ -13,7 +13,7 @@ import sys
 import signal as signal_module
 import time
 from pathlib import Path
-from typing import Optional
+from typing import Final, Optional
 
 from .constants import (
     DEFAULT_GATEWAY_PORT,
@@ -28,6 +28,10 @@ from .constants import (
 )
 
 logger = logging.getLogger(__name__)
+
+# Lock byte sits past any PID text (a PID is < 11 chars): Windows mandatory
+# locks must never cover the content other processes need to read.
+PID_LOCK_OFFSET: Final[int] = 32
 
 
 def _detach_kwargs() -> dict:
@@ -95,13 +99,42 @@ class GatewaySupervisor:
                 logger.error("Cannot restart gateway: 'hermes' not found on PATH")
                 return False
 
-            # Stop existing gateway
-            subprocess.run(
-                [hermes_bin, "gateway", "stop"],
-                timeout=10,
-                capture_output=True,
-            )
+            # Stop existing gateway. A WEDGED gateway can hang even the
+            # host's own stop (observed: pre-config zombie ignoring kill
+            # until taskkill /F) — bound it and fail with a clear hint
+            # instead of surfacing a bare timeout.
+            try:
+                subprocess.run(
+                    [hermes_bin, "gateway", "stop"],
+                    timeout=10,
+                    capture_output=True,
+                )
+            except subprocess.TimeoutExpired:
+                logger.error(
+                    "'hermes gateway stop' timed out after 10s — the "
+                    "running gateway appears wedged. Kill it manually "
+                    "(taskkill /F /PID <pid> / Process Explorer) before "
+                    "the watchdog can restart it."
+                )
+                return False
             time.sleep(2)
+
+            # Port-ownership guard: after an authoritative 'gateway stop',
+            # something still listening on the port is NOT ours (Windows
+            # iphlpsvc serves netsh portproxy rules; also VPN/proxy tools).
+            # Spawning into it bind-fails and leaves a zombie that health
+            # checks then restart-loop against forever — observed live when a
+            # stale WSL portproxy held 8642 on svchost.
+            if self._port_listening(self.port):
+                logger.error(
+                    "Port %s is still occupied after 'hermes gateway stop' — "
+                    "another process or service owns it (VPN/proxy/WSL "
+                    "port-forward?). NOT spawning a gateway that cannot "
+                    "bind; free the port or set "
+                    "platforms.api_server.extra.port.",
+                    self.port,
+                )
+                return False
 
             # Start new gateway detached from this process group (POSIX: new
             # session; Windows: DETACHED_PROCESS so it survives us).
@@ -116,6 +149,15 @@ class GatewaySupervisor:
 
         except Exception as e:
             logger.error("Failed to restart gateway: %s", e)
+            return False
+
+    @staticmethod
+    def _port_listening(port: int, timeout: float = 3.0) -> bool:
+        """True when ANY process accepts TCP on 127.0.0.1:port."""
+        try:
+            with socket.create_connection(("127.0.0.1", port), timeout=timeout):
+                return True
+        except OSError:
             return False
 
     def _write_pid(self) -> None:
@@ -137,6 +179,7 @@ class GatewaySupervisor:
             logger.info("Another supervisor holds the lock; exiting")
             self._running = False
             return
+        # Only the lock holder writes — no TOCTOU.
         self._lock_handle.seek(0)
         self._lock_handle.truncate()
         self._lock_handle.write(str(os.getpid()))
@@ -146,10 +189,17 @@ class GatewaySupervisor:
     def _acquire_file_lock(handle) -> None:
         """Exclusive non-blocking lock on the PID file (raises OSError if
         held). fcntl on POSIX, msvcrt byte-range lock on Windows; no-op on
-        platforms with neither (single-instance then rests on the PID probe)."""
+        platforms with neither (single-instance then rests on the PID probe).
+
+        Windows locks a byte at PID_LOCK_OFFSET — past any PID text — NOT
+        offset 0: byte-range locks there are mandatory, so locking the text
+        made the PID unreadable to every other handle (PermissionError) and
+        broke stop/status while a supervisor ran. A lock past EOF still
+        serializes supervisors without hiding the content. POSIX flock is
+        advisory and whole-file; the offset is irrelevant there."""
         if os.name == "nt":
             import msvcrt
-            handle.seek(0)
+            handle.seek(PID_LOCK_OFFSET)
             msvcrt.locking(handle.fileno(), msvcrt.LK_NBLCK, 1)
             return
         try:
@@ -212,23 +262,31 @@ class GatewaySupervisor:
                                 "hermes binary not found; supervisor exiting"
                             )
                             break
-                        if self.restart_gateway():
-                            consecutive_failures = 0
-                            failed_restarts += 1
-                            # Escalating backoff: a gateway that crash-loops
-                            # (bad config) must not be hammered every 30s.
-                            delay = (
-                                SUPERVISOR_RESTART_DELAY
-                                if failed_restarts < 5
-                                else SUPERVISOR_RESTART_DELAY * 10
-                            )
-                            logger.info(
-                                "Waiting %ss for gateway to stabilize...", delay
-                            )
-                            time.sleep(delay)
-                            # Give the freshly started gateway a moment before next health check.
-                            time.sleep(SUPERVISOR_CHECK_INTERVAL)
-                            continue
+                    if self.restart_gateway():
+                        consecutive_failures = 0
+                        failed_restarts += 1
+                        # Escalating backoff: a gateway that crash-loops
+                        # (bad config) must not be hammered every 30s.
+                        delay = (
+                            SUPERVISOR_RESTART_DELAY
+                            if failed_restarts < 5
+                            else SUPERVISOR_RESTART_DELAY * 10
+                        )
+                        logger.info(
+                            "Waiting %ss for gateway to stabilize...", delay
+                        )
+                        time.sleep(delay)
+                        # Give the freshly started gateway a moment before next health check.
+                        time.sleep(SUPERVISOR_CHECK_INTERVAL)
+                        continue
+                    else:
+                        # Restart refused (port owned by another service,
+                        # wedged gateway, spawn error): back off the same way
+                        # so a blocked port cannot be hammered every 10s.
+                        failed_restarts += 1
+                        consecutive_failures = 0
+                        time.sleep(SUPERVISOR_RESTART_DELAY)
+                        continue
 
                 time.sleep(SUPERVISOR_CHECK_INTERVAL)
 
@@ -348,17 +406,90 @@ def terminate_pid(pid: int) -> bool:
         return False
 
 
+def read_supervisor_pid() -> int:
+    """PID from the PID file; 0 when absent/garbage, -1 when unreadable.
+
+    -1 means a legacy supervisor holds a mandatory lock over the text
+    (pre-0.0.11 layout) — i.e. RUNNING but PID unknown; callers fall back
+    to find_supervisor_pids()."""
+    if not SUPERVISOR_PID_FILE.exists():
+        return 0
+    try:
+        return int(SUPERVISOR_PID_FILE.read_text().strip())
+    except PermissionError:
+        return -1
+    except (ValueError, OSError):
+        return 0
+
+
+def find_supervisor_pids() -> list[int]:
+    """Supervisor daemon PIDs via process enumeration — fallback when the
+    PID file is unreadable (legacy lock) or stale.
+
+    Matches only genuine `python -m hermes_mobile_plugin.supervisor` launches
+    (a bare substring match also catches shells whose command text merely
+    MENTIONS the module — that terminated our own caller once). Windows also
+    excludes the querying process's full ancestor chain: those command lines
+    can legitimately contain the module string (e.g. a shell running this
+    very stop command) and must never be terminated."""
+    if os.name == "nt":
+        ps_script = (
+            "$ex = New-Object System.Collections.Generic.HashSet[uint32]; "
+            "$cur = $PID; "
+            "for ($i = 0; $i -lt 10 -and $cur; $i++) { "
+            "$p = Get-CimInstance Win32_Process -Filter (\"ProcessId = $cur\"); "
+            "if (-not $p) { break }; "
+            "[void]$ex.Add([uint32]$p.ProcessId); $cur = $p.ParentProcessId }; "
+            "Get-CimInstance Win32_Process "
+            "-Filter \"CommandLine LIKE '% -m hermes_mobile_plugin.supervisor%'\" "
+            "| Where-Object { -not $ex.Contains([uint32]$_.ProcessId) } "
+            "| Select-Object -ExpandProperty ProcessId"
+        )
+        try:
+            out = subprocess.run(
+                ["powershell", "-NoProfile", "-Command", ps_script],
+                capture_output=True, text=True, timeout=20,
+            ).stdout
+            return [int(x) for x in out.split() if x.strip().isdigit()]
+        except Exception:
+            return []
+    try:
+        out = subprocess.run(
+            ["pgrep", "-f", "python.* -m hermes_mobile_plugin[.]supervisor"],
+            capture_output=True, text=True, timeout=10,
+        ).stdout
+        return [int(x) for x in out.split() if x.strip().isdigit()]
+    except Exception:
+        return []
+
+
 def is_supervisor_running() -> bool:
-    """True if a supervisor daemon is alive (per PID file)."""
+    """True if a supervisor daemon is alive (per PID file).
+
+    Windows: a LIVE supervisor holds an msvcrt lock on the PID file, and its
+    open handle denies other handles read access — so read_text() raising
+    PermissionError means "running", not "broken". The old code treated it
+    as corrupt, then crashed inside its own cleanup when unlink() hit the
+    same lock (WinError 32). When the file can be read but is garbage or its
+    PID is dead, unlink() failures there are likewise non-fatal: another
+    process mid-cleanup must not turn our answer into a crash."""
     if not SUPERVISOR_PID_FILE.exists():
         return False
     try:
         pid = int(SUPERVISOR_PID_FILE.read_text().strip())
+    except PermissionError:
+        return True  # locked by a live holder
     except (ValueError, OSError):
-        SUPERVISOR_PID_FILE.unlink(missing_ok=True)
+        try:
+            SUPERVISOR_PID_FILE.unlink(missing_ok=True)
+        except OSError:
+            return True  # cannot clear it; assume live rather than double-spawn
         return False
     if not pid_alive(pid):
-        SUPERVISOR_PID_FILE.unlink(missing_ok=True)
+        try:
+            SUPERVISOR_PID_FILE.unlink(missing_ok=True)
+        except OSError:
+            pass
         return False
     return True
 

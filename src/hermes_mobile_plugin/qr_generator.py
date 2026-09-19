@@ -18,6 +18,7 @@ except ImportError:
 from .config import load_hermes_config, validate_config
 from .constants import (
     DEFAULT_GATEWAY_PORT,
+    PLUGIN_DIR,
     QR_BORDER,
     QR_BOX_SIZE,
     QR_ERROR_CORRECTION,
@@ -216,7 +217,12 @@ async def generate_qr(config: Optional[dict] = None, output_dir: Optional[Path] 
         config = load_hermes_config()
 
     if output_dir is None:
-        output_dir = Path.home() / ".hermes" / "plugins" / "hermes-mobile-qr"
+        # HERMES_HOME, NOT Path.home()/".hermes" — hermes-agent's home is
+        # profile-aware (AppData\Local\hermes on Windows, ~/.hermes on
+        # Linux/Termux). Hardcoding the fallback wrote the QR into a home the
+        # gateway never reads.
+        from .constants import PLUGIN_DIR
+        output_dir = PLUGIN_DIR
 
     output_dir.mkdir(parents=True, exist_ok=True)
 

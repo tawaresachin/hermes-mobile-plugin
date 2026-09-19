@@ -1,5 +1,32 @@
 # Hermes Mobile QR Plugin
 
+## 0.0.11 — Real-machine install fixes (Windows verified end-to-end)
+
+Found by actually running the installer on a live Windows machine with
+Hermes Agent v0.21.0 installed under `%LOCALAPPDATA%\hermes`:
+
+- **Installers no longer guess the Hermes home.** `install.bat` and
+  `install.sh` locate the Python that owns the `hermes` CLI and resolve
+  the home through `hermes_constants.get_hermes_home()` — on this machine
+  that is `%LOCALAPPDATA%\hermes`, not `~/.hermes`. All pip installs and
+  file copies target that environment, so the plugin actually lands where
+  the gateway loads it.
+- **Supervisor refuses to spawn into an occupied port.** A stale WSL
+  `netsh portproxy` rule (served by svchost/iphlpsvc) owned 8642; the old
+  watchdog restart-looped against it and left bind-failed zombie gateways.
+  It now checks port ownership after an authoritative `gateway stop` and
+  backs off with a clear diagnostic instead.
+- **`hermes gateway stop` timeout is handled** (wedged gateway) with an
+  actionable message instead of a bare traceback every cycle.
+- **PID-file lock no longer hides the PID.** Windows mandatory byte-range
+  locks covered the text itself, so `status`/`--stop` crashed with
+  `PermissionError` while a supervisor ran; the lock byte moved past the
+  content and stop/status gained a process-enumeration fallback that
+  excludes its own ancestor chain (the naive match terminated the caller).
+- **QR default output dir follows HERMES_HOME** (was hardcoded
+  `~/.hermes`, which split the install across two homes on Windows).
+- **CLI install banner**: duplicate "Step 4/4" removed; step counter fixed.
+
 ## 0.0.10 — Fix scripted installs on every OS
 
 - **`hermes-mobile-install` was dead code**: `pyproject.toml` pointed the

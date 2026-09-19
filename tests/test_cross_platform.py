@@ -54,6 +54,23 @@ def test_terminate_pid_guards_self_kill():
     proc.wait(timeout=5)
 
 
+def test_port_listening_guard():
+    """The supervisor refuses to spawn a gateway into an occupied port —
+    observed live when a stale WSL portproxy (svchost/iphlpsvc) held 8642
+    and the restart loop produced a bind-failed zombie."""
+    import socket
+    from hermes_mobile_plugin.supervisor import GatewaySupervisor
+    s = socket.socket()
+    s.bind(("127.0.0.1", 0))
+    s.listen(1)
+    port = s.getsockname()[1]
+    try:
+        assert GatewaySupervisor._port_listening(port) is True
+        assert GatewaySupervisor._port_listening(1) is False  # reserved, unbound
+    finally:
+        s.close()
+
+
 def test_status_html_escapes_injection():
     evil = {
         "url": 'http://x"><script>alert(1)</script>',

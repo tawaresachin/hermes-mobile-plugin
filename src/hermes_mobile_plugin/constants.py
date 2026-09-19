@@ -17,7 +17,13 @@ def _read_plugin_version() -> str:
     metadata — the value pip records at build time (mirrors plugin.yaml)."""
     import re
 
-    for parent in Path(__file__).resolve().parents:
+    # OUTERMOST manifest wins: the repo-root manifest is the release source
+    # of truth, but the wheel ships a bundled copy INSIDE the package, and a
+    # nearest-first walk made that stale copy shadow the root (version
+    # drift regressed). Deployed plugin dirs sit above their package, so
+    # outermost-first is correct in all three layouts (repo, deployed,
+    # wheel).
+    for parent in reversed(list(Path(__file__).resolve().parents)):
         manifest = parent / "plugin.yaml"
         if manifest.is_file():
             try:
