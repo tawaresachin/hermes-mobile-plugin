@@ -40,10 +40,10 @@ from .constants import PLUGIN_VERSION, UPLOADS_DIR
 
 logger = logging.getLogger(__name__)
 
-_MAX_UPLOAD_BYTES = 9 * 1024 * 1024  # 9 MB — matches the app's cap. The
-# api_server app's aiohttp client_max_size (MAX_REQUEST_BYTES = 10 MB) 413s
-# any larger body BEFORE this route runs; 9 MB leaves framing headroom so
-# the route's own error (clear message) fires before the gateway's generic 413.
+_MAX_UPLOAD_BYTES = 25 * 1024 * 1024  # 25 MB — matches the app's cap. The
+# api_server app's aiohttp client_max_size (MAX_REQUEST_BYTES = 25 MB) 413s
+# any larger body BEFORE this route runs; 25 MB covers phone video (~20s of
+# 1080p) plus framing headroom.
 _SAFE_ID_RE = re.compile(r"^[A-Za-z0-9_\-]{1,64}$")  # session ids: api_... / uuid-ish
 _SAFE_NAME_RE = re.compile(r"^[A-Za-z0-9._\-]{1,128}$")  # filenames (no path separators)
 
