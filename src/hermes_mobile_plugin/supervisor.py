@@ -68,12 +68,16 @@ class GatewaySupervisor:
         """
         try:
             import urllib.request
-            with urllib.request.urlopen(gateway_health_url(self.port), timeout=5) as resp:
+            with urllib.request.urlopen(gateway_health_url(self.port), timeout=10) as resp:
                 if resp.status == 200:
                     return True
                 logger.warning("Health check returned HTTP %s", resp.status)
         except Exception as e:
             logger.debug("Health check failed: %s", e)
+            # ponytail: 10s absorbs a loaded Termux probe; a wedged
+            # gateway still fails the check, so no real down is
+            # missed — it just takes a few extra probe cycles.
+            time.sleep(5)
 
         # Diagnostic only: listening socket but no HTTP 200 == wedged process.
         try:
@@ -83,6 +87,37 @@ class GatewaySupervisor:
                     "(event loop wedged?) — treating as down", self.port)
         except Exception:
             pass
+        return False
+
+    def gateway_process_exists(self) -> bool:
+        """True when ANY live hermes-gateway process holds the port.
+
+        The supervisor only supervises a gateway IT started, so a live
+        process in our own spawned set is the "alive" signal; a foreign
+        hermes process on the host is ignored (we never stop/restart it).
+        ponytail: /proc argv scan, single-host box — good enough here;
+        upgrade to gateway.status.looks_like_gateway_command_line if it
+        ever spans hosts/process managers.
+        """
+        spawned = getattr(self, "_spawned_pids", [])
+        for pid in spawned:
+            pid_dir = Path("/proc", str(pid))
+            if pid_dir.exists():
+                try:
+                    argv = pid_dir.joinpath("cmdline").read_bytes().replace(b"\0", b" ")
+                except OSError:
+                    argv = b""
+                if b"gateway" in argv and b"run" in argv:
+                    return True
+        # Boot-time gateway we did not spawn ourselves: trust it too, via
+        # pid-file or the /proc scan of the host's `hermes gateway run`.
+        for pid_dir in Path("/proc").glob("[0-9]*"):
+            try:
+                argv = pid_dir.joinpath("cmdline").read_bytes().replace(b"\0", b" ")
+            except OSError:
+                continue
+            if b"gateway" in argv and b"run" in argv and b"hermes" in argv:
+                return True
         return False
 
     def restart_gateway(self) -> bool:
@@ -145,6 +180,10 @@ class GatewaySupervisor:
                 **_detach_kwargs(),
             )
             logger.info("Spawned gateway process (PID: %s)", proc.pid)
+            # Remember what we spawned; process-exists checks must only
+            # trust gateways WE started — a user-run gateway (different
+            # port, manual launch) must never be judged "ours".
+            self._spawned_pids = getattr(self, "_spawned_pids", []) + [proc.pid]
             return True
 
         except Exception as e:
@@ -262,6 +301,19 @@ class GatewaySupervisor:
                                 "hermes binary not found; supervisor exiting"
                             )
                             break
+                    if self.gateway_process_exists():
+                        # Process is alive but /health is not answering: slow
+                        # gateway under load / mid-turn / draining session.
+                        # NEVER stop+restart it — that SIGTERMs the live
+                        # gateway and every active task dies with a
+                        # "Hermes is shutting down" notice to each chat.
+                        # Just keep probing; only a GONE process restarts.
+                        logger.warning(
+                            "Gateway process alive but /health silent — "
+                            "treating as slow, not restarting"
+                        )
+                        time.sleep(SUPERVISOR_RESTART_DELAY)
+                        continue
                     if self.restart_gateway():
                         consecutive_failures = 0
                         failed_restarts += 1
