@@ -65,7 +65,7 @@ GATEWAY_HEALTH_CHECK_URL: Final[str] = gateway_health_url()
 
 # Supervisor configuration
 SUPERVISOR_CHECK_INTERVAL: Final[int] = 10  # seconds
-SUPERVISOR_FAILURE_THRESHOLD: Final[int] = 3
+SUPERVISOR_FAILURE_THRESHOLD: Final[int] = 5
 SUPERVISOR_RESTART_DELAY: Final[int] = 30  # seconds
 
 # File paths. hermes-agent is profile-aware (HERMES_HOME override /
