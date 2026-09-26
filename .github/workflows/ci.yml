@@ -63,6 +63,7 @@ jobs:
           mkdir -p "$SB/mod" "$SB/home"
           printf 'import os\n\ndef get_hermes_home():\n    return os.environ["FAKE_HH"]\n' > "$SB/mod/hermes_constants.py"
           python3 -m venv "$SB/venv"
+          "$SB/venv/bin/pip" install -q pyyaml qrcode
           printf '#!%s/bin/python3\nimport sys\nsys.exit(0)\n' "$SB/venv" > "$SB/venv/bin/hermes"
           chmod +x "$SB/venv/bin/hermes"
           touch "$SB/home/config.yaml"
