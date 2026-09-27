@@ -91,6 +91,10 @@ if %errorlevel% neq 0 (
     echo    console script will not be on PATH, but the plugin itself works.
 )
 
+REM The console script may be absent (pip -e failed) -> the module fallback
+REM needs src/ on PYTHONPATH or it ImportErrors right after the copy.
+set "PYTHONPATH=%~dp0src;%PYTHONPATH%"
+
 REM Generate QR code
 echo.
 echo 📱 Generating QR code...

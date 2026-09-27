@@ -5,7 +5,6 @@ from typing import Final
 
 # Plugin metadata
 PLUGIN_NAME: Final[str] = "hermes-mobile-qr"
-PACKAGE_NAME: Final[str] = "hermes-mobile-plugin"
 
 
 def _read_plugin_version() -> str:
@@ -61,8 +60,6 @@ def gateway_health_url(port: int = GATEWAY_PORT) -> str:
     supervisor constructed with a custom port silently checked another)."""
     return f"http://127.0.0.1:{port}/health"
 
-GATEWAY_HEALTH_CHECK_URL: Final[str] = gateway_health_url()
-
 # Supervisor configuration
 SUPERVISOR_CHECK_INTERVAL: Final[int] = 10  # seconds
 SUPERVISOR_FAILURE_THRESHOLD: Final[int] = 5
@@ -105,8 +102,9 @@ QR_ERROR_CORRECTION: Final[str] = "ERROR_CORRECT_L"
 QR_BOX_SIZE: Final[int] = 10
 QR_BORDER: Final[int] = 4
 
-# Security
-API_KEY_DISPLAY_TRUNCATION: Final[int] = 20
+# Security. The display prefix is deliberately short: a pairing QR may sit
+# open on a screen, and 20 chars of a 32-char key is ~60% of the secret.
+API_KEY_DISPLAY_TRUNCATION: Final[int] = 8
 
 
 def find_hermes_cli() -> "str | None":

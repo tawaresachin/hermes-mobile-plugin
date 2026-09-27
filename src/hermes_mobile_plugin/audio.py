@@ -83,7 +83,13 @@ def _resolve_profile_scope(profile: Optional[str]) -> Any:
         set_hermes_home_override,
         reset_hermes_home_override,
     )
-    from hermes_cli.web_server import _resolve_profile_dir
+    try:
+        from hermes_cli.web_server import _resolve_profile_dir
+    except ImportError:
+        # Sep-2026 decomposition moved it to the sibling module; hosts that
+        # updated hermes-agent broke every profile-scoped speak/transcribe
+        # call until the plugin followed.
+        from hermes_cli.web_server_profiles import _resolve_profile_dir
 
     profile_dir = _resolve_profile_dir(requested)
 

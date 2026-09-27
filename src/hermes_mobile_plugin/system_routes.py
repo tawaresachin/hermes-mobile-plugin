@@ -18,7 +18,6 @@ probe — require the gateway Bearer key.
 from __future__ import annotations
 
 import asyncio
-import json
 import logging
 import platform
 import shutil
@@ -105,7 +104,12 @@ async def _run(binary: str) -> Any:
     proc = await asyncio.create_subprocess_exec(
         binary, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE
     )
-    await proc.communicate()
+    try:
+        await asyncio.wait_for(proc.communicate(), timeout=10)
+    except asyncio.TimeoutError:
+        proc.kill()
+        await proc.communicate()
+        raise RuntimeError(f"{binary} timed out after 10s")
     return proc
 
 

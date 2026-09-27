@@ -54,8 +54,23 @@ _expected_key_cache: tuple[float, Optional[str]] = (0.0, None)
 _KEY_CACHE_TTL_SECONDS = 60.0
 
 
-def _expected_key() -> Optional[str]:
-    """The api_server platform key from config.yaml, TTL-cached. None when unset."""
+def _expected_key(app: Optional[Any] = None) -> Optional[str]:
+    """The Bearer key the gateway itself enforces.
+
+    Live adapter FIRST: api_server resolves its key as config extra.key ->
+    profile-scoped secret -> env (api_server.py `_expected_api_key`, which is
+    also profile-aware under multiplex). The old config+env-only chain
+    missed a scoped key and silently ran every gated route keyless — that
+    fail-open drift is what adapter-first eliminates. The config chain below
+    remains only for standalone use with no adapter mounted (CLI/tests).
+    """
+    if app is not None:
+        adapter = app.get("api_server_adapter")
+        if adapter is not None:
+            try:
+                return adapter._expected_api_key() or None
+            except Exception as exc:  # noqa: BLE001 — fall through to config
+                logger.warning("hermes-mobile-qr: adapter key unavailable: %s", exc)
     global _expected_key_cache
     now = time.monotonic()
     stamp, value = _expected_key_cache
@@ -84,7 +99,7 @@ def _expected_key() -> Optional[str]:
 
 def _authorized(request: web.Request) -> bool:
     """True when the request carries the gateway Bearer key (or the server has no key)."""
-    expected = _expected_key()
+    expected = _expected_key(request.app)
     if not expected:
         # No platform key configured: api_server itself runs keyless, so these
         # routes match its posture rather than inventing a second auth scheme.
@@ -122,6 +137,10 @@ def require_key(handler: Any) -> Any:
 async def _read_json(request: web.Request) -> dict:
     try:
         body = await request.read()
+    except web.HTTPRequestEntityTooLarge:
+        # chunked bodies carry no Content-Length, so aiohttp's
+        # client_max_size can trip mid-read — report 413, not "bad request".
+        raise AudioBackendError("body too large", status=413)
     except Exception as exc:
         raise AudioBackendError(f"Could not read body: {exc}", status=400)
     if not body:
@@ -222,7 +241,7 @@ async def _transcribe_route(request: web.Request) -> web.Response:
     except Exception as exc:
         logger.exception("Unexpected error in /api/audio/transcribe")
         return _json_response(
-            {"ok": False, "error": f"Internal error: {exc}"}, status=500
+            {"ok": False, "error": "Internal error (see server log)"}, status=500
         )
 
     elapsed_ms = int((time.monotonic() - started) * 1000)
@@ -257,7 +276,7 @@ async def _speak_route(request: web.Request) -> web.Response:
     except Exception as exc:
         logger.exception("Unexpected error in /api/audio/speak")
         return _json_response(
-            {"ok": False, "error": f"Internal error: {exc}"}, status=500
+            {"ok": False, "error": "Internal error (see server log)"}, status=500
         )
 
     encoded = base64.b64encode(audio_bytes).decode("ascii")
@@ -278,14 +297,11 @@ async def _speak_route(request: web.Request) -> web.Response:
     )
 
 
-async def _health_route(request: web.Request) -> web.Response:
-    """GET /api/audio/health — mobile app uses this to detect availability.
+_health_cache: tuple[float, dict] = (0.0, {})
 
-    Intentionally unauthenticated: it discloses no user data and the app
-    probes it before/independently of a session. Reports which provider
-    chains actually work so the app can disable unavailable modes instead
-    of failing mid-recording.
-    """
+
+def _health_payload() -> dict:
+    """Blocking provider probing — runs off the event loop, cached."""
     stt = True
     tts = True
     stt_provider = None
@@ -310,17 +326,36 @@ async def _health_route(request: web.Request) -> web.Response:
     except ImportError:
         tts = False
 
-    return _json_response(
-        {
-            "ok": stt and tts,
-            "stt_available": stt,
-            "tts_available": tts,
-            "stt_provider": stt_provider,
-            "tts_provider": tts_provider,
-            "plugin_version": PLUGIN_VERSION,
-            "upload": True,
-        }
-    )
+    return {
+        "ok": stt and tts,
+        "stt_available": stt,
+        "tts_available": tts,
+        "stt_provider": stt_provider,
+        "tts_provider": tts_provider,
+        "plugin_version": PLUGIN_VERSION,
+        "upload": True,
+    }
+
+
+async def _health_route(request: web.Request) -> web.Response:
+    """GET /api/audio/health — mobile app uses this to detect availability.
+
+    Intentionally unauthenticated: it discloses no user data and the app
+    probes it before/independently of a session. Reports which provider
+    chains actually work so the app can disable unavailable modes instead
+    of failing mid-recording.
+
+    Probing parses config + imports provider modules, so it runs OFF the
+    event loop and is cached 60 s — an unauthenticated endpoint must not be
+    a remote CPU amplifier for a LAN peer.
+    """
+    global _health_cache
+    now = time.monotonic()
+    stamp, payload = _health_cache
+    if not payload or now >= stamp:
+        payload = await _run_blocking(_health_payload)
+        _health_cache = (now + 60.0, payload)
+    return _json_response(payload)
 
 
 # ─── Attachment upload / download ─────────────────────────────────────

@@ -19,7 +19,7 @@ import asyncio
 import logging
 import os
 import re
-
+import shlex
 import subprocess
 import sys
 import time
@@ -57,12 +57,6 @@ def _hermes_bin() -> Optional[str]:
     Shared with the supervisor; resolves hermes.exe on Windows."""
     from .constants import find_hermes_cli
     return find_hermes_cli()
-
-
-def _checkout_dir() -> Optional[Path]:
-    import sys
-    d = Path(sys.executable).parent.parent
-    return d if (d / ".git").exists() or (d.parent / ".git").exists() else None
 
 
 def _run_check_git() -> Dict[str, Any]:
@@ -164,7 +158,9 @@ async def _update_check_route(request: web.Request) -> web.Response:
     except Exception as exc:
         logger.exception("mobile update check failed")
         return _json_response({"ok": False, "error": str(exc)[:300]}, status=500)
-    _check_cache = (now + _CHECK_CACHE_TTL_S, data)
+    # A failed probe must not silence the truth for a full TTL: cache errors
+    # with an already-expired stamp so the next request retries live.
+    _check_cache = (now + _CHECK_CACHE_TTL_S if data.get("ok") else now, data)
     return _json_response(data)
 
 
@@ -184,8 +180,10 @@ async def _update_apply_route(request: web.Request) -> web.Response:
         # Service-manager host: `gateway restart` is correct here (systemd
         # /launchd equivalent owns relaunch). DETACHED so it outlives the
         # gateway dying mid-update.
+        # PowerShell single-quoted strings escape ' by doubling it.
+        ps_hermes = hermes.replace("'", "''")
         cmd = ["powershell", "-NoProfile", "-Command",
-               f"Start-Sleep 2; & '{hermes}' update --yes; & '{hermes}' gateway restart"]
+               f"Start-Sleep 2; & '{ps_hermes}' update --yes; & '{ps_hermes}' gateway restart"]
         detach = {"creationflags": 0x00000008 | 0x00000200}  # DETACHED|NEW_GROUP
     else:
         # Restart authority depends on topology:
@@ -201,9 +199,9 @@ async def _update_apply_route(request: web.Request) -> web.Response:
         # watchdog's restart loop; observed as a restart wedged 13+ min.
         from .supervisor import is_supervisor_running
         restart_cmd = (
-            f"'{hermes}' gateway stop"
+            f"{shlex.quote(hermes)} gateway stop"
             if is_supervisor_running()
-            else f"'{hermes}' gateway restart"
+            else f"{shlex.quote(hermes)} gateway restart"
         )
         # Termux host runs with SIGCHLD=IGNORE; a setsid child inherits the
         # disposition and `hermes update`'s git-remote-https child dies
@@ -212,7 +210,7 @@ async def _update_apply_route(request: web.Request) -> web.Response:
         # without perl — the SIGCHLD quirk is Termux-specific.
         script = (
             f"sleep 2; "
-            f"'{hermes}' update --yes 2>&1; "
+            f"{shlex.quote(hermes)} update --yes 2>&1; "
             f"{restart_cmd} 2>&1"
         )
         import shutil

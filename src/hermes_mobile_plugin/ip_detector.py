@@ -78,11 +78,15 @@ def get_tailscale_ip() -> str:
     Returns:
         Detected IP address string.
     """
-    # Method 1: Tailscale CLI
-    output = _run_command(TAILSCALE_CLI_COMMAND)
-    if ip := _parse_tailscale_ip_from_output(output):
-        logger.debug("Tailscale IP detected via CLI: %s", ip)
-        return ip
+    # Method 1: Tailscale CLI — `tailscale ip -4` prints a BARE IP (no
+    # "inet" token), so the interface parser never matched it and this
+    # method was silently dead. Validate directly (and strip any CIDR).
+    out = (_run_command(TAILSCALE_CLI_COMMAND) or "").strip()
+    if out:
+        ip = out.splitlines()[0].strip().split("/")[0]
+        if is_valid_ip(ip):
+            logger.debug("Tailscale IP detected via CLI: %s", ip)
+            return ip
 
     # Method 2: Parse network interfaces
     for cmd in NETWORK_COMMANDS:

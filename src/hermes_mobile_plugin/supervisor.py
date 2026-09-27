@@ -350,11 +350,6 @@ class GatewaySupervisor:
             self._remove_pid()
             logger.info("Supervisor stopped")
 
-    def stop(self) -> None:
-        """Signal supervisor to stop."""
-        self._running = False
-
-
 def start_daemon() -> int:
     """Start supervisor as a daemon process.
 

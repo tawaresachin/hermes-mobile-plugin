@@ -23,6 +23,7 @@ from .constants import (
     QR_BOX_SIZE,
     QR_ERROR_CORRECTION,
     QR_HTML_FILE,
+    API_KEY_DISPLAY_TRUNCATION,
     PLUGIN_VERSION,
 )
 from .ip_detector import get_tailscale_ip
@@ -129,7 +130,9 @@ def get_html_template(qr_svg: str, data: dict) -> str:
     """
     api_key = data.get("api_key", "")
     display_key = (
-        f"{api_key[:20]}..." if len(api_key) > 20 else (api_key or "[MISSING]")
+        f"{api_key[:API_KEY_DISPLAY_TRUNCATION]}..."
+        if len(api_key) > API_KEY_DISPLAY_TRUNCATION
+        else (api_key or "[MISSING]")
     )
     # Escape every config-derived string before HTML interpolation — a key
     # or hostname containing markup must not inject into this page.
@@ -239,6 +242,11 @@ async def generate_qr(config: Optional[dict] = None, output_dir: Optional[Path] 
     output_path = output_dir / QR_HTML_FILE
     if save_file:
         output_path.write_text(html, encoding="utf-8")
+        try:
+            # The page embeds the full API key — keep it owner-only.
+            output_path.chmod(0o600)
+        except OSError:
+            pass
         logger.info("QR code HTML saved to: %s", output_path)
 
         if open_browser:
@@ -262,7 +270,7 @@ def print_connection_details(config: Optional[dict] = None) -> None:
     print("📱 Hermes Mobile Connection Details")
     print("="*50)
     print(f"Server URL:  {data['url']}")
-    print(f"API Key:     {data['api_key'][:20]}...")
+    print(f"API Key:     {data['api_key'][:API_KEY_DISPLAY_TRUNCATION]}...")
     print(f"Compression: {'Enabled' if data['context_compression'] else 'Disabled'}")
     print(f"Version:     {data['version']}")
     print("="*50 + "\n")
