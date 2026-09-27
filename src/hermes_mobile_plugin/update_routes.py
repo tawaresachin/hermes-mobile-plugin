@@ -59,6 +59,21 @@ def _hermes_bin() -> Optional[str]:
     return find_hermes_cli()
 
 
+def _git_argv(args: list[str]) -> list[str]:
+    """Reset SIGCHLD before exec'ing git.
+
+    The Termux host runs the gateway with SIGCHLD=IGNORE; git's helper
+    children (git-remote-https, rev-list) then die on waitpid and `git
+    fetch` silently fails to advance refs — the check counted against a
+    stale origin/main and reported a months-old install as "Latest".
+    Same reason the apply path perl-wraps. POSIX only; no perl -> plain.
+    """
+    import shutil
+    if os.name != "nt" and shutil.which("perl"):
+        return ["perl", "-e", r'$SIG{CHLD}="DEFAULT"; exec @ARGV', *args]
+    return args
+
+
 def _run_check_git() -> Dict[str, Any]:
     """Report-only fallback: fetch + count, no install side effects. Same
     plumbing `hermes update --check` wraps; used when the CLI itself errors
@@ -66,16 +81,16 @@ def _run_check_git() -> Dict[str, Any]:
     import sys
     repo = Path(sys.executable).parent.parent
     try:
-        branch = subprocess.run(["git", "-C", str(repo), "rev-parse", "--abbrev-ref", "HEAD"],
+        branch = subprocess.run(_git_argv(["git", "-C", str(repo), "rev-parse", "--abbrev-ref", "HEAD"]),
                                 capture_output=True, text=True, timeout=30).stdout.strip() or "main"
-        subprocess.run(["git", "-C", str(repo), "fetch", "origin", branch],
+        subprocess.run(_git_argv(["git", "-C", str(repo), "fetch", "origin", branch]),
                        capture_output=True, text=True, timeout=_UPDATE_TIMEOUT_S)
         behind_s = subprocess.run(
-            ["git", "-C", str(repo), "rev-list", f"HEAD..origin/{branch}", "--count"],
+            _git_argv(["git", "-C", str(repo), "rev-list", f"HEAD..origin/{branch}", "--count"]),
             capture_output=True, text=True, timeout=60).stdout.strip()
-        cur = subprocess.run(["git", "-C", str(repo), "rev-parse", "--short", "HEAD"],
+        cur = subprocess.run(_git_argv(["git", "-C", str(repo), "rev-parse", "--short", "HEAD"]),
                              capture_output=True, text=True, timeout=30).stdout.strip()
-        lat = subprocess.run(["git", "-C", str(repo), "rev-parse", "--short", f"origin/{branch}"],
+        lat = subprocess.run(_git_argv(["git", "-C", str(repo), "rev-parse", "--short", f"origin/{branch}"]),
                              capture_output=True, text=True, timeout=30).stdout.strip()
         behind = int(behind_s) if behind_s.isdigit() else None
         return {"ok": behind is not None, "up_to_date": behind == 0, "behind": behind,
@@ -255,7 +270,7 @@ async def _update_version_route(request: web.Request) -> web.Response:
     sha = ""
     try:
         sha = subprocess.run(
-            ["git", "-C", str(Path(sys.executable).parent.parent), "rev-parse", "--short", "HEAD"],
+            _git_argv(["git", "-C", str(Path(sys.executable).parent.parent), "rev-parse", "--short", "HEAD"]),
             capture_output=True, text=True, timeout=10).stdout.strip()
     except Exception:
         pass
