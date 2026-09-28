@@ -248,15 +248,49 @@ async def _update_apply_route(request: web.Request) -> web.Response:
             # which made the mobile update button 500 on every Mac.)
             cmd = ["bash", "-c", script]
         detach = {"start_new_session": True}
+    start = time.monotonic()
     try:
         with open(_log_path, "ab") as logf:
-            subprocess.Popen(
+            proc = subprocess.Popen(
                 cmd,
                 stdin=subprocess.DEVNULL, stdout=logf, stderr=logf,
                 **detach,
             )
     except Exception as exc:
         return _json_response({"ok": False, "error": str(exc)[:300]}, status=500)
+    # Wait a short window so the caller learns whether the detached
+    # chain actually started and is making progress -- not just that
+    # Popen() accepted the argv.  A process that dies immediately
+    # (refused updater, missing interpreter, SIGCHLD quirk) must not
+    # be reported as "ok" while the app spins "updating..." for 5 min.
+    deadline = start + 6.0
+    try:
+        last = Path(_log_path).stat().st_size
+    except FileNotFoundError:
+        last = 0
+    while time.monotonic() < deadline:
+        await asyncio.sleep(0.4)
+        try:
+            cur = Path(_log_path).stat().st_size
+        except FileNotFoundError:
+            continue
+        if cur > last:
+            last = cur
+            break
+        if proc.poll() is not None:
+            await asyncio.sleep(0.6)
+            break
+    if proc.poll() is not None and proc.returncode != 0:
+        return _json_response(
+            {"ok": False,
+             "error": f"detached update exited {proc.returncode}; see {_log_path}",
+             "log": _log_path},
+            status=500)
+    if time.monotonic() - start > 6.0 and last == 0:
+        return _json_response(
+            {"ok": False,
+             "error": "detached update did not start writing; see " + _log_path},
+            status=500)
     global _check_cache
     _check_cache = None
     return _json_response({"ok": True, "log": _log_path,
