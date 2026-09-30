@@ -18,7 +18,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
-import re
+
 import shlex
 import subprocess
 import sys
@@ -37,8 +37,6 @@ _UPDATE_TIMEOUT_S = 120
 _CHECK_CACHE_TTL_S = 60.0
 _check_cache: Optional[Tuple[float, Dict[str, Any]]] = None
 _log_path = str(HERMES_HOME / "logs" / "mobile_update.log")
-
-_SHA_LINE = re.compile(r"\b([0-9a-f]{7,40})\b")
 
 
 def _installed_version() -> str:
@@ -101,65 +99,52 @@ def _run_check_git() -> Dict[str, Any]:
         return {"ok": False, "error": f"git fallback failed: {str(exc)[:200]}"}
 
 
-def _run_check() -> Dict[str, Any]:
+def _cli_update_refused() -> bool:
+    """Run the real `hermes update --check` and detect a DESIGN refusal.
+
+    On a Termux source checkout the updater refuses on purpose (building
+    Python packages on-device); nothing the app can do will make the
+    button work. The refusal must reach the row as a reason. Crashes /
+    timeouts count as "not refused" — the apply path still runs the CLI.
+    """
     hermes = _hermes_bin()
     if not hermes:
-        return {"ok": False, "error": "hermes CLI not found on server"}
+        return False
     try:
         proc = subprocess.run(
             [hermes, "update", "--check"],
             capture_output=True, text=True, timeout=_UPDATE_TIMEOUT_S,
             env={**os.environ, "NO_COLOR": "1", "TERM": "dumb"},
         )
-    except subprocess.TimeoutExpired:
-        return {"ok": False, "error": "update check timed out"}
-    except Exception as exc:  # pragma: no cover
-        return {"ok": False, "error": str(exc)[:300]}
-    out = ((proc.stdout or "") + "\n" + (proc.stderr or "")).strip()
-    # Strip ANSI just in case NO_COLOR was ignored.
-    out = re.sub(r"\x1b\[[0-9;]*m", "", out)
-    if "Traceback" in out:
-        # Upstream CLI crashed mid-check (observed: update_cmd.py int('')) —
-        # fall back to plain git plumbing so the card still reports truth.
-        fb = _run_check_git()
-        if fb.get("ok"):
-            fb["detail"] = "hermes update --check crashed; counted via git.\n" + fb["detail"]
-            return fb
-        return {"ok": False, "error": "update check crashed (see detail)",
-                "detail": out[-1200:]}
-    low = out.lower()
-    up = any(k in low for k in (
-        "already up to date", "up-to-date", "no updates",
-        "currently up to date", "is up to date"))
-    behind = None
-    m = re.search(r"(\d+)\s+commit", out, re.I)
-    if m:
-        behind = int(m.group(1))
-    shas = _SHA_LINE.findall(out)
-    current = shas[0][:7] if shas else ""
-    latest = shas[-1][:7] if len(shas) > 1 else (current if up else "")
-    if not current:
-        # CLI output format drifted (no SHA lines) — git plumbing is the
-        # source of truth for where HEAD actually is.
-        fb = _run_check_git()
-        current = fb.get("current_sha") or ""
-        latest = fb.get("latest_sha") or latest
-        if behind is None:
-            behind = fb.get("behind")
-    branch = ""
-    bm = re.search(r"branch '?([A-Za-z0-9._/-]+)'?", out)
-    if bm:
-        branch = bm.group(1)
-    return {
-        "ok": True,
-        "up_to_date": bool(up or (behind == 0)),
-        "behind": behind,
-        "current_sha": current,
-        "latest_sha": latest,
-        "branch": branch,
-        "installed_version": _installed_version(),
-        "detail": out[-1200:],
-    }
+    except Exception:
+        return False
+    out = ((proc.stdout or "") + "\n" + (proc.stderr or "")).lower()
+    return "not supported on termux" in out
+
+
+def _run_check() -> Dict[str, Any]:
+    """Git plumbing is the source of truth for branch/behind/SHAs; the CLI
+    check adds only whether `hermes update` is permitted on this host.
+
+    The old code regexed `[0-9a-f]{7,40}` out of raw CLI output, which on a
+    refused/failed run picked up hex fragments from error text (pm-runtime
+    install paths) — the row then showed two plausible-looking SHAs that were
+    neither HEAD nor upstream, plus an Update button that no-ops forever
+    ("updating but the update never happened"). Git says the truth; the CLI
+    says whether acting on it is allowed."""
+    data = _run_check_git()
+    data["installed_version"] = _installed_version()
+    if not data.get("ok"):
+        return data
+    if _cli_update_refused():
+        data["ok"] = False
+        data["error"] = ("Update is refused on this host (source checkout on "
+                         "Termux — hermes update would build packages on-device). "
+                         "Switch to the APT install: pkg install hermes-agent")
+        return data
+    data["ok"] = True
+    data["up_to_date"] = data.get("behind") == 0
+    return data
 
 
 @require_key
@@ -190,6 +175,16 @@ async def _update_apply_route(request: web.Request) -> web.Response:
     hermes = _hermes_bin()
     if not hermes:
         return _json_response({"ok": False, "error": "hermes CLI not found on server"}, status=500)
+    if _cli_update_refused():
+        # Pre-flight: the updater refuses this host (Termux source
+        # checkout). Firing the chain would restart the gateway and
+        # change NOTHING — the app's "updating…" would end with the
+        # same version, and the button would be back. Report instead.
+        return _json_response({"ok": False, "error":
+            "hermes update is refused on this host (Termux source "
+            "checkout — it would build Python packages on-device). "
+            "Switch to the APT install (pkg install hermes-agent), then "
+            "update."}, status=409)
     Path(_log_path).parent.mkdir(parents=True, exist_ok=True)
     if os.name == "nt":
         # Service-manager host: `gateway restart` is correct here (systemd
