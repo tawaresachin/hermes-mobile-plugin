@@ -1,5 +1,7 @@
 """Constants and configuration for Hermes Mobile Plugin."""
 
+import json
+import os
 from pathlib import Path
 from typing import Final
 
@@ -55,6 +57,71 @@ PROTOCOL_VERSION: Final[int] = 1
 GATEWAY_PORT: Final[int] = 8642
 DEFAULT_GATEWAY_PORT: Final[int] = GATEWAY_PORT
 
+# Gateway PID pidfile (JSON: {"pid": N, "kind": "hermes-gateway", ...}; a
+# bare integer is accepted for forward compatibility).
+GATEWAY_PID_FILE: Final[Path]  # assigned after HERMES_HOME below
+
+def gateway_pid() -> int | None:
+    """PID of the running gateway from its pidfile, or None when absent.
+
+    The live pidfile is JSON ({"pid": N, ...}); a plain integer string is
+    accepted too. Stale files (dead PID is the caller's business) are
+    still returned — liveness is judged by pid_alive() at the call site.
+    """
+    try:
+        text = GATEWAY_PID_FILE.read_text(encoding="utf-8").strip()
+    except OSError:
+        return None
+    if not text:
+        return None
+    if text.startswith("{"):
+        try:
+            pid = json.loads(text).get("pid")
+        except (ValueError, AttributeError):
+            return None
+        return int(pid) if isinstance(pid, int) and pid > 0 else None
+    if text.isdigit():
+        return int(text)
+    return None
+
+def _load_config_from_disk() -> dict:
+    """config.yaml as a plain dict ({} when absent/broken) — the on-disk
+    source for resolve_gateway_port() when no config dict is passed in."""
+    try:
+        import yaml
+        if yaml is None or not CONFIG_PATH.exists():
+            return {}
+        data = yaml.safe_load(CONFIG_PATH.read_text(encoding="utf-8"))
+        return data if isinstance(data, dict) else {}
+    except Exception:  # noqa: BLE001 - a broken config must not break port resolution
+        return {}
+
+
+def resolve_gateway_port(config: dict | None = None, default: int = GATEWAY_PORT) -> int:
+    """Effective gateway port, without assuming the hard-coded default.
+
+    Precedence: (a) platforms.api_server.extra.port when set (in the
+    passed-in config dict, or config.yaml when None), (b) the
+    API_SERVER_PORT environment variable, (c) the default. Used by
+    status/supervisor/QR so a custom port is honoured end-to-end instead
+    of a supervisor silently watching 8642."""
+    if config is None:
+        config = _load_config_from_disk()
+    port = (
+        (config.get("platforms", {}) or {})
+        .get("api_server", {})
+        .get("extra", {})
+        .get("port")
+    )
+    if isinstance(port, int) and 0 < port < 65536:
+        return port
+    env_port = os.environ.get("API_SERVER_PORT", "").strip()
+    if env_port.isdigit():
+        p = int(env_port)
+        if 0 < p < 65536:
+            return p
+    return default
+
 def gateway_health_url(port: int = GATEWAY_PORT) -> str:
     """Health URL for the GIVEN port (the old constant hard-coded 8642, so a
     supervisor constructed with a custom port silently checked another)."""
@@ -78,6 +145,7 @@ def _resolve_hermes_home() -> Path:
 
 
 HERMES_HOME: Final[Path] = _resolve_hermes_home()
+GATEWAY_PID_FILE = HERMES_HOME / "gateway.pid"
 CONFIG_PATH: Final[Path] = HERMES_HOME / "config.yaml"
 PLUGINS_DIR: Final[Path] = HERMES_HOME / "plugins"
 PLUGIN_DIR: Final[Path] = PLUGINS_DIR / PLUGIN_NAME
