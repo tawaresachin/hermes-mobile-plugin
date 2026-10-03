@@ -43,11 +43,26 @@ def _installed_version() -> str:
     # The plugin runs INSIDE the gateway process, which is the hermes
     # install — importing the package IS the installed version, no
     # subprocess needed.
+    version = ""
     try:
         import hermes_cli
-        return getattr(hermes_cli, "__version__", "") or ""
+        version = getattr(hermes_cli, "__version__", "") or ""
     except Exception:
-        return ""
+        pass
+    # ponytail: git-bootstrap installs stamp baseVersion as the literal
+    # 'unknown' — fall back to the install stamp's displayVersion
+    # (git.<sha7>), the same value `hermes --version` prints; last
+    # resort the stamp's commit. Ceiling: stamp absent -> 'unknown'
+    # (today's behavior), no crash path.
+    if version not in ("", "unknown"):
+        return version
+    try:
+        from hermes_cli.steward import read_install_stamp
+        from pm.paths import repo_root
+        s = read_install_stamp(repo_root()) or {}
+    except Exception:
+        return version
+    return str(s.get("displayVersion") or (s.get("commit") or "")[:7] or version)
 
 
 def _hermes_bin() -> Optional[str]:

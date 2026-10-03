@@ -1,5 +1,18 @@
 # Hermes Mobile QR Plugin
 
+## 0.0.21 — About-section version fixes
+
+Two About rows in the mobile app misreported on git-bootstrap Hermes
+installs:
+
+- **Agent version** showed `unknown`: `hermes_cli.__version__` is the
+  literal string `unknown` when the install stamp has no release base.
+  `_installed_version()` now falls back to the stamp's `displayVersion`
+  (`git.<sha7>`, same as `hermes --version`), then the stamp commit.
+- **Hermes-mobile version** had no source: the QR `hermes://connect` URI
+  carried only `url` + `key`. It now ships `&version=<plugin>` too, so
+  the phone can render the plugin version offline. Old app builds ignore
+  the unknown param (backward compatible).
 ## 0.0.20 — README install-pin auto-sync
 
 Every release now keeps the README install command (`...@vX.Y.Z`)

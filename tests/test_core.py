@@ -95,11 +95,12 @@ def test_qr_uri_uses_connect_scheme_and_encodes(monkeypatch):
     generate_qr_svg(data)
     payload = captured["payload"]
     assert payload.startswith("hermes://connect?url=")
-    # exactly one raw '&' separator (between url= and key=); the key's own
+    # exactly two raw '&' separators (url/key/version); the key's own
     # '&' must be encoded
-    assert payload.count("&") == 1
+    assert payload.count("&") == 2
     from urllib.parse import urlparse, parse_qs
     parsed = urlparse(payload)
     qs = parse_qs(parsed.query)
     assert qs["url"] == ["http://100.1.2.3:8642"]
     assert qs["key"] == ["key&with=chars"]
+    assert qs["version"] == [PLUGIN_VERSION]

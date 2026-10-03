@@ -104,9 +104,12 @@ def generate_qr_svg(data: dict) -> str:
 
     # URI-scheme payload; both values percent-encoded so special characters
     # (e.g. a key containing '&') cannot corrupt the query parse on the phone.
-    qr_uri = "hermes://connect?url={}&key={}".format(
+    # ponytail: ship version too so the phone's About row can render it
+    # offline. Backward-compatible: older app builds ignore unknown params.
+    qr_uri = "hermes://connect?url={}&key={}&version={}".format(
         quote(str(data["url"]), safe=""),
         quote(str(data["api_key"]), safe=""),
+        quote(str(data.get("version", "")), safe=""),
     )
 
     qr = qrcode.QRCode(
