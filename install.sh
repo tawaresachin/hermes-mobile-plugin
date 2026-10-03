@@ -134,6 +134,16 @@ echo "✅ Plugin installed to $PLUGIN_DIR"
 # only worked if the package was importable from the current directory — so
 # the old final step failed on stock checkouts. The PYTHONPATH fallback below
 # always works.
+#
+# NOTE: the `cli install` step below already does ALL the zero-manual work
+# in shared Python (so this script and install.bat can never drift):
+#   - seeds the API key (config.yaml + .env)   -> hermes_mobile_plugin/key_seeder.py
+#   - installs into the gateway's isolated runtime venv if needed
+#     (the bootstrap venv under ~/.hermes/installs/..., NOT the toolchain
+#     interpreter we pip'd into)               -> hermes_mobile_plugin/envdetect.py
+#   - regenerates the QR + supervised gateway restart -> cli.py / constants.py
+# envdetect.ensure_runtime_venv() is the single source of truth; on hosts
+# without an isolated envs tree it is a no-op and never fails the install.
 echo ""
 echo "📱 Generating QR code..."
 if command -v hermes-mobile-plugin &> /dev/null; then

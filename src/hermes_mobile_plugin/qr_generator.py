@@ -17,7 +17,6 @@ except ImportError:
 
 from .config import load_hermes_config, validate_config
 from .constants import (
-    DEFAULT_GATEWAY_PORT,
     PLUGIN_DIR,
     QR_BORDER,
     QR_BOX_SIZE,
@@ -25,6 +24,7 @@ from .constants import (
     QR_HTML_FILE,
     API_KEY_DISPLAY_TRUNCATION,
     PLUGIN_VERSION,
+    resolve_gateway_port,
 )
 from .ip_detector import get_tailscale_ip
 
@@ -57,7 +57,11 @@ def build_connection_config(config: dict, ip_override: Optional[str] = None) -> 
     # Extract API server config
     api_server = config.get("platforms", {}).get("api_server", {})
     api_key = api_server.get("extra", {}).get("key", "")
-    port = api_server.get("extra", {}).get("port", DEFAULT_GATEWAY_PORT)
+    port = api_server.get("extra", {}).get("port")
+    if not isinstance(port, int):
+        # Keep the QR's fallback in lock-step with the supervisor/status:
+        # config extra.port > API_SERVER_PORT env > default (8642).
+        port = resolve_gateway_port(config)
 
     if not api_key:
         logger.warning("No API key configured - mobile app will fail to authenticate")

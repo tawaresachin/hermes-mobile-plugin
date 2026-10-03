@@ -96,6 +96,12 @@ REM needs src/ on PYTHONPATH or it ImportErrors right after the copy.
 set "PYTHONPATH=%~dp0src;%PYTHONPATH%"
 
 REM Generate QR code
+REM The `cli install` step below does ALL the zero-manual work in shared
+REM Python (envdetect.py / key_seeder.py), so this batch file and install.sh
+REM can never drift: API-key seeding (config.yaml + .env), install into the
+REM gateway's isolated runtime venv when one exists, QR regeneration and
+REM supervised gateway restart. No isolated-envs tree -> one-line no-op,
+REM install never fails because of it.
 echo.
 echo 📱 Generating QR code...
 where hermes-mobile-plugin >nul 2>nul

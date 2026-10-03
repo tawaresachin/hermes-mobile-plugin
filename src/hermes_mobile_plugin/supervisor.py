@@ -25,6 +25,7 @@ from .constants import (
     SUPERVISOR_RESTART_DELAY,
     find_hermes_cli,
     gateway_health_url,
+    resolve_gateway_port,
 )
 
 logger = logging.getLogger(__name__)
@@ -396,8 +397,10 @@ def start_daemon() -> int:
     os.dup2(log_file.fileno(), sys.stdout.fileno())
     os.dup2(log_file.fileno(), sys.stderr.fileno())
 
-    # Run supervisor
-    supervisor = GatewaySupervisor()
+    # Run supervisor — the resolved port, not the hard-coded default:
+    # a host that moved the gateway via platforms.api_server.extra.port
+    # must be watched on THAT port, or the watchdog thinks it's down.
+    supervisor = GatewaySupervisor(port=resolve_gateway_port())
     supervisor.run()
 
     return 0
@@ -586,7 +589,11 @@ def run_foreground() -> None:
     """Daemon main: single-instance guard, PID file, then the supervise loop."""
     if is_supervisor_running():
         return
-    supervisor = GatewaySupervisor()
+    # Resolve the port here so the detached daemon watches the host's
+    # ACTUAL gateway port — a custom port from config.yaml / API_SERVER_PORT
+    # would otherwise be checked as the default 8642 and the watchdog would
+    # think the gateway is down.
+    supervisor = GatewaySupervisor(port=resolve_gateway_port())
     supervisor.run()
 
 

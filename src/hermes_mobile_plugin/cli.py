@@ -24,7 +24,16 @@ import time
 from pathlib import Path
 
 from .config import load_hermes_config, validate_config
-from .constants import GATEWAY_PORT, PLUGIN_DIR, PLUGIN_NAME, PLUGIN_VERSION
+from .constants import (
+    PLUGIN_DIR,
+    PLUGIN_NAME,
+    PLUGIN_VERSION,
+    SUPERVISOR_CHECK_INTERVAL,
+    SUPERVISOR_FAILURE_THRESHOLD,
+    gateway_pid,
+    resolve_gateway_port,
+)
+from .key_seeder import print_seed_report, seed_api_key
 from .qr_generator import generate_qr, print_connection_details
 from .supervisor import (
     SUPERVISOR_PID_FILE,
@@ -39,7 +48,8 @@ logger = logging.getLogger(__name__)
 
 
 def cmd_install(args: argparse.Namespace) -> int:
-    """Execute full installation: plugin files + QR + supervisor.
+    """Execute full installation: key seeding, plugin + runtime venv, QR,
+    supervised gateway restart.
 
     Args:
         args: CLI arguments.
@@ -53,7 +63,7 @@ def cmd_install(args: argparse.Namespace) -> int:
     print()
 
     # Step 1: Validate config
-    print("📦 Step 1/4: Validating configuration...")
+    print("📦 Step 1/5: Validating configuration...")
     config = load_hermes_config()
     warnings = validate_config(config)
     if warnings:
@@ -63,9 +73,20 @@ def cmd_install(args: argparse.Namespace) -> int:
         print("   ✅ Configuration valid")
     print()
 
-    # Step 2: Deploy plugin files into Hermes' plugins directory (the same
+    # Step 2: Seed the API key so pairing works out of the box (config + .env)
+    print("🔑 Step 2/5: Ensuring the API key...")
+    try:
+        report = seed_api_key(config)
+        print_seed_report(report)
+        config = load_hermes_config()  # re-load: the seeded key must flow into the QR
+    except Exception as e:  # noqa: BLE001 - seeding must never fail the install
+        print(f"   ⚠️  API key seeding failed: {e}")
+        print("   Continuing anyway...")
+    print()
+
+    # Step 3: Deploy plugin files into Hermes' plugins directory (the same
     # deployment the .bat/.sh installers and hermes-mobile-install use).
-    print("📦 Step 2/4: Deploying plugin files...")
+    print("📦 Step 3/5: Deploying plugin files...")
     try:
         copied = deploy_plugin_files(PLUGIN_DIR)
         for path in copied:
@@ -75,8 +96,42 @@ def cmd_install(args: argparse.Namespace) -> int:
         print("   Continuing anyway...")
     print()
 
-    # Step 3: Generate QR code
-    print("📷 Step 3/4: Generating QR code...")
+    # Step 4: Make the GATEWAY's runtime environment see the plugin. The
+    # hermes bootstrap resolves 3rd-party packages from an isolated runtime
+    # venv, not from the toolchain interpreter install.sh/bat pip'd into —
+    # so a deploy that skipped this leaves the running gateway with
+    # "No module named 'hermes_mobile_plugin'". Pure no-op when the plugin
+    # is already importable from everywhere; a one-line warning when no
+    # isolated env exists (standard desktop installs).
+    print("🔗 Step 4/5: Ensuring the gateway runtime has the plugin...")
+    try:
+        from . import envdetect
+
+        venv = envdetect.find_runtime_venv()
+        if venv is None:
+            print("   ℹ️  No isolated runtime venv detected — nothing extra to do "
+                  "(standard desktop install)")
+        else:
+            venv = Path(venv)
+            if envdetect.same_interpreter_as_caller(venv):
+                print(f"   ✅ Runtime env is this interpreter ({venv}) — already set")
+            elif envdetect.venv_has_module(venv):
+                print(f"   ✅ Runtime env already has the plugin: {venv}")
+            else:
+                print(f"   🔧 Installing into runtime env: {venv}")
+                ok = envdetect.ensure_importable(venv, str(_package_source_path()))
+                if ok:
+                    print(f"   ✅ installed into runtime env: {venv}")
+                else:
+                    print(f"   ⚠️  Could not install into runtime env {venv} — "
+                          "the gateway may not load the plugin until you do "
+                          f"`{venv}/bin/python -m pip install <this package>` manually")
+    except Exception as e:  # noqa: BLE001 - must never fail the install
+        print(f"   ⚠️  Runtime env detection skipped: {e}")
+    print()
+
+    # Step 5: Generate QR code (with the now-guaranteed key baked in)
+    print("📷 Step 5/5: Generating QR code...")
     try:
         import asyncio
         output_path = asyncio.run(generate_qr(config, open_browser=False, save_file=True))
@@ -86,36 +141,96 @@ def cmd_install(args: argparse.Namespace) -> int:
         print("   Continuing anyway...")
     print()
 
-    # Step 4: Start supervisor
-    print("🛡️  Step 4/4: Starting 24x7 gateway supervisor...")
+    # --- Post-install: supervised gateway restart -------------------------
+    # If a gateway is already running, it is STILL the old code: it never
+    # saw the new key / plugin. Restart it under watch so the phone can
+    # pair immediately ("zero-manual install"). The plugin must never leave
+    # a gateway unwatched: the supervisor is ensured BEFORE any SIGTERM.
+    print("🛡️  Ensuring 24x7 gateway supervision...")
+    port = resolve_gateway_port()
+    health_before = _gateway_health(port)
+    gw_pid = gateway_pid()
+    gw_running = bool(gw_pid and _pid_alive(gw_pid))
 
-    # Spawn the DETACHED watchdog (its own session, survives this CLI
-    # exiting). The old in-process daemon thread printed '24x7 monitoring'
-    # and then died the moment cmd_install returned — a lie. ensure_running
-    # is idempotent via the PID file + flock guard in the child.
+    sup_ensured = False
     if is_supervisor_running():
         pid = read_supervisor_pid()
-        print(f"   ⚠️  Supervisor already running (PID: {pid if pid and pid > 0 else 'locked'})")
+        print(f"   ✅ Supervisor already running (PID: {pid if pid and pid > 0 else 'locked'})")
+        sup_ensured = True
     else:
         sup_pid = ensure_running()
+        if sup_pid <= 0:
+            sup_pid = start_daemon()  # last resort: detached re-exec
         if sup_pid > 0:
             print(f"   ✅ Supervisor started (PID: {sup_pid}, 24x7 monitoring enabled)")
+            sup_ensured = True
         else:
             print("   ⚠️  Supervisor failed to start")
     print()
 
+    restarted = False
+    if gw_running and health_before:
+        # /health already passed before any change: skip the restart (spec:
+        # "If /health already passed before any change, skip the restart").
+        print("🔄 Gateway is already healthy (port "
+              f"{port}) — no restart needed. The new API key takes effect "
+              "on the next gateway restart.")
+    elif gw_running and sup_ensured:
+        # Watchdog is up: SIGTERM the gateway; the watchdog respawns it
+        # with the new config within a check cycle.
+        print(f"🔄 Restarting running gateway (PID {gw_pid}) under the "
+              "24x7 supervisor...")
+        terminate_pid(gw_pid)
+        restarted = True
+    elif gw_running and not sup_ensured:
+        print(f"   ⚠️  Gateway running (PID {gw_pid}) but the supervisor "
+              "would not start — leaving it untouched (never unwatched). "
+              "Run 'hermes-mobile-plugin supervisor' and retry.")
+    else:
+        # No gateway running at all: nothing to restart. The watchdog (if
+        # up) spawns one on its own 10s schedule. No 60s wait here — the
+        # QR was already generated in Step 5 with the live key baked in.
+        if sup_ensured:
+            print("🔄 No gateway running — the supervisor will start one "
+                  "and keep it up 24/7.")
+
+    if restarted:
+        # Only a running gateway that we just restarted warrants the 60s
+        # wait-for-healthy + QR refresh; every other path already produced
+        # a key-baked QR in Step 5 (or has no gateway to wait for).
+        healthy = _wait_for_health(port, timeout_s=60.0)
+        print("📷 Regenerating QR code with the live connection details...")
+        try:
+            import asyncio
+            config = load_hermes_config()
+            output_path = asyncio.run(generate_qr(config, open_browser=False, save_file=True))
+            print(f"   ✅ QR code generated: {output_path}")
+        except Exception as e:
+            print(f"   ⚠️  QR generation failed: {e}")
+        if healthy:
+            print(f"✅ Gateway is healthy on port {port} — the QR above is live.")
+        else:
+            print(f"⚠️  Gateway not healthy yet (port {port}) — the supervisor is "
+                  "monitoring it and will bring it up; re-run 'hermes-mobile-plugin status'.")
+
     # Summary
+    print()
     print("=" * 60)
     print("🎉 Setup Complete!")
     print("=" * 60)
     print()
+    config = load_hermes_config()  # final truth: what the phone will actually see
     print("📱 Next steps:")
-    print("   1. Start Hermes Agent: hermes agent")
+    if not gw_running and not sup_ensured:
+        print("   1. Start Hermes Agent: hermes agent")
+    else:
+        print("   1. The gateway is managed by the 24x7 supervisor "
+              "(no manual start needed)")
     print("   2. Install Hermes Mobile APK on your phone")
     print("   3. Open app → Settings → Scan QR Code")
     print("   4. Scan the QR from your browser")
     print()
-    print("🔗 Connection details:")
+    print(f"🔗 Connection details (port {port}):")
     print_connection_details(config)
     print()
     print("📊 Management commands:")
@@ -183,19 +298,12 @@ def cmd_status(args: argparse.Namespace) -> int:
     else:
         print("❌ Supervisor not running")
 
-    # Check gateway (TCP liveness + HTTP /health — the same contract the
-    # supervisor uses; a wedged event loop passes TCP but fails HTTP)
-    import urllib.request
-    try:
-        with urllib.request.urlopen(
-                f"http://127.0.0.1:{GATEWAY_PORT}/health", timeout=3) as resp:
-            healthy = resp.status == 200
-    except Exception:
-        healthy = False
+    port = resolve_gateway_port()
+    healthy = _gateway_health(port)
     if healthy:
-        print(f"✅ Gateway is healthy (port {GATEWAY_PORT})")
+        print(f"✅ Gateway is healthy (port {port})")
         return 0
-    print(f"❌ Gateway is down (port {GATEWAY_PORT})")
+    print(f"❌ Gateway is down (port {port})")
     return 1
 
 
@@ -248,9 +356,10 @@ def cmd_supervisor(args: argparse.Namespace) -> int:
         return 0
     else:
         # Start supervisor
+        port = resolve_gateway_port()
         print("🔄 Starting Gateway Supervisor (24x7 daemon)...")
-        print("   Monitoring port 8642 every 10 seconds")
-        print("   Will restart gateway after 3 consecutive failures")
+        print(f"   Monitoring port {port} every {SUPERVISOR_CHECK_INTERVAL} seconds")
+        print(f"   Will restart gateway after {SUPERVISOR_FAILURE_THRESHOLD} consecutive failures")
         print("   Logs: ~/.hermes/logs/gateway_supervisor.log")
         print()
 
@@ -266,6 +375,55 @@ def cmd_supervisor(args: argparse.Namespace) -> int:
 class InstallError(Exception):
     """Raised when plugin deployment into Hermes' plugins dir fails."""
     pass
+
+
+def _pid_alive(pid: int) -> bool:
+    """Liveness probe that signals nothing (see supervisor.pid_alive)."""
+    from .supervisor import pid_alive
+
+    return pid_alive(pid)
+
+
+def _gateway_health(port: int, timeout: float = 3.0) -> bool:
+    """HTTP 200 on /health for the GIVEN port — the same liveness verdict
+    the supervisor uses (a raw TCP probe would pass for a wedged loop)."""
+    import urllib.request
+
+    try:
+        with urllib.request.urlopen(
+                f"http://127.0.0.1:{port}/health", timeout=timeout) as resp:
+            return resp.status == 200
+    except Exception:
+        return False
+
+
+def _wait_for_health(port: int, timeout_s: float = 60.0) -> bool:
+    """Poll /health on the resolved port until healthy or the deadline.
+
+    A gateway mid-restart (or a fresh spawn by the watchdog) can take a
+    while to come up; the watchdog itself restarts after repeated failures,
+    so a deadline miss is reported, not fatal."""
+    deadline = time.monotonic() + timeout_s
+    while time.monotonic() < deadline:
+        if _gateway_health(port):
+            return True
+        time.sleep(2.0)
+    return _gateway_health(port)
+
+
+def _package_source_path() -> str:
+    """pip-installable source for the runtime-venv install: the repo
+    checkout root when present (editable, CI/dev), else the deployed
+    plugin dir (an in-place redeploy), else the wheel name on the system
+    (standard desktop install — pip fetches it from the cache/PyPI)."""
+    here = Path(__file__).resolve()
+    repo_root = here.parent.parent.parent
+    if (repo_root / "pyproject.toml").is_file():
+        return str(repo_root)
+    deployed = here.parent.parent  # ~/.hermes/plugins/hermes-mobile-qr
+    if (deployed / "plugin.yaml").is_file():
+        return str(deployed)
+    return "hermes-mobile-plugin"
 
 
 def deploy_plugin_files(target_dir: Path) -> list[Path]:
@@ -382,6 +540,17 @@ def install_plugin(args: "argparse.Namespace | None" = None) -> int:
     print("✅ Hermes Mobile plugin deployed:")
     for path in copied:
         print(f"   {path}")
+    print()
+
+    # The gateway's runtime environment is often an ISOLATED venv, not the
+    # interpreter that did this deploy — installing into it keeps the
+    # running gateway able to import the plugin. Pure no-op when there is
+    # no isolated env (standard desktop install); never fails the install.
+    try:
+        from . import envdetect
+        print(envdetect.ensure_runtime_venv())
+    except Exception as e:  # noqa: BLE001
+        print(f"⚠️  Runtime env check skipped: {e}", file=sys.stderr)
     print()
     print("Next: restart Hermes Agent (or run 'hermes-mobile-plugin install')")
     print("so the gateway picks up the plugin and generates the QR code.")

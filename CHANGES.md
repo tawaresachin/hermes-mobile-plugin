@@ -1,5 +1,46 @@
 # Hermes Mobile QR Plugin
 
+## 0.0.19 — Zero-manual install: key seeding, runtime venv, live port
+
+`install` now leaves nothing manual: it works on the gateway host's real
+environment, not just the toolchain interpreter the shell installers
+pip into.
+
+- **API key auto-seeding** (`key_seeder.py`): when
+  `platforms.api_server.extra.key` and/or `API_SERVER_KEY` in the
+  Hermes `.env` are missing or shorter than 16 chars, `install`
+  generates `secrets.token_urlsafe(48)` and writes it to BOTH —
+  config.yaml via a pyyaml round-trip with a one-time `.bak` backup,
+  and `.env` by replacing/appending the `API_SERVER_KEY=` line only
+  (0600 perms). A strong existing key is NEVER clobbered; when only
+  one side has it, it is copied to the other so the two can never
+  disagree.
+- **Gateway runtime-venv detection + install into it**
+  (`envdetect.py`, shared by `install.sh`, `install.bat` and the CLI):
+  on hermes-bootstrap hosts (Termux/proot) the gateway resolves
+  3rd-party packages from an ISOLATED runtime venv under
+  `~/.hermes/installs/<hash>/environments/<hash>/venv`, so a plain
+  `pip install` into the toolchain python left the running gateway
+  with "No module named 'hermes_mobile_plugin'". `install` now
+  detects that venv (running-gateway pidfile → `/proc/<pid>/exe` →
+  in-process sys.path → newest-mtime scan fallback), and pip-installs
+  the plugin into it with `ensurepip` when the venv has no pip
+  (observed live). No isolated envs → one-line notice, install
+  continues. `install_plugin` (the `hermes-mobile-install` console
+  script the shell installers end with) runs the same step, so the
+  .sh/.bat/pip paths can never drift.
+- **Live port resolution + supervised restart + QR at the end**
+  (`constants.resolve_gateway_port`, `cli`, `supervisor`):
+  `platforms.api_server.extra.port` > `API_SERVER_PORT` env > 8642,
+  used by `status`, the watchdog daemon (it no longer hard-codes 8642)
+  and the QR fallback. After installing, if a gateway is already
+  running: a healthy one is left alone (spec: skip the restart); an
+  unhealthy one gets SIGTERM'd only after the 24x7 watchdog is
+  ensured first (the plugin never leaves a gateway unwatched), then
+  the install waits up to 60s for `/health` on the resolved port and
+  regenerates the QR with the live key baked in — replacing the old
+  "Next steps: start Hermes Agent" guidance.
+
 ## 0.0.12 — POSIX audit fixes (Linux / macOS / Termux)
 
 Critical line-by-line audit of everything the Windows-only machine could

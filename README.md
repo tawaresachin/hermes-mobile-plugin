@@ -60,6 +60,23 @@ Then grab the [Hermes Mobile APK](https://github.com/tawaresachin/hermes-mobile/
 **Settings → Connect with QR**, and scan. LAN, Tailscale, or any tunnel — the QR carries the
 address your phone can actually reach.
 
+## What install sets up automatically
+
+`hermes-mobile-plugin install` is zero-manual: every prerequisite is detected and fixed in
+place, and nothing in the user's data is ever clobbered.
+
+| Step | What it does |
+|---|---|
+| **Validates** config | Surfaces warnings (bad port type, short key) without blocking. |
+| **Seeds the API key** | If `platforms.api_server.extra.key` / `API_SERVER_KEY` in `~/.hermes/.env` are missing or < 16 chars, a `secrets.token_urlsafe(48)` key is generated and written to **both** (config with a `.bak` backup, `.env` line replaced/appended, 0600). A strong existing key is kept; a weak line on one side is replaced with the strong one from the other side. |
+| **Deploys** the plugin files | Into the Hermes plugins dir, replacing stale copies. |
+| **Installs into the gateway's runtime env** | On hermes-bootstrap hosts (Termux/proot) the gateway runs 3rd-party packages from an isolated venv under `~/.hermes/installs/…/venv`, not the toolchain interpreter — the install detects it (running-gateway pidfile → `/proc/<pid>/exe` → in-process sys.path → newest-mtime scan) and `pip install`s the plugin into it (`ensurepip` first if the venv has no pip). No isolated envs → a one-line notice, install continues. |
+| **Generates the QR** | With the (now guaranteed) key baked in; URL/port follow the host's real settings. |
+| **Supervises the gateway** | The 24/7 watchdog is ensured **before** any restart: a running gateway that is unhealthy is SIGTERM'd so the watchdog respawns it with the new config; a healthy one is left alone. The install then waits up to 60 s for `/health` on the **resolved port** and regenerates the QR. |
+
+Port precedence everywhere (`status`, watchdog, QR): `platforms.api_server.extra.port` →
+`API_SERVER_PORT` env → `8642`.
+
 ## CLI
 
 ```text
