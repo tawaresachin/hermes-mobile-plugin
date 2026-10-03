@@ -60,8 +60,11 @@ class TestKeySeeder:
         env_text = env_path.read_text(encoding="utf-8")
         assert f"API_SERVER_KEY={key}" in env_text
         assert env_text.count("API_SERVER_KEY=") == 1
-        # secret file perms
-        assert stat.S_IMODE(env_path.stat().st_mode) == 0o600
+        # secret file perms (POSIX only — NTFS has no chmod, so on
+        # Windows the mode comes back as the filesystem default; the
+        # seeder's chmod there is best-effort and must not break install)
+        if os.name != "nt":
+            assert stat.S_IMODE(env_path.stat().st_mode) == 0o600
         # .bak backup written before the first mutation
         assert (tmp_path / "config.yaml.bak").is_file()
 
