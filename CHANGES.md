@@ -1,5 +1,13 @@
 # Hermes Mobile QR Plugin
 
+## 0.0.20 — README install-pin auto-sync
+
+Every release now keeps the README install command (`...@vX.Y.Z`)
+pointing at the newest tag: the auto-tag workflow runs
+`python -m hermes_mobile_plugin.readme_pin` after creating the tag and
+pushes the doc fix back to main (idempotent — no commit when the pin
+is already current). No more manual `docs(readme): fix stale pin`
+releases.
 ## 0.0.19 — Zero-manual install: key seeding, runtime venv, live port
 
 `install` now leaves nothing manual: it works on the gateway host's real

@@ -61,3 +61,24 @@ jobs:
           gh release create "${{ steps.prep.outputs.tag }}" \
             --title "${{ steps.prep.outputs.tag }}" \
             --notes-file release-notes.md
+      - name: Sync README install pin to the new tag
+        # The README documents install with a pinned @vX.Y.Z ref; without
+        # this step it silently drifts one release behind on every tag.
+        # Push it back to main so the docs always point at the newest
+        # tag. (readme_pin is stdlib-only; no pip install needed here.)
+        if: steps.prep.outputs.created == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          VER="${{ steps.prep.outputs.tag }}"
+          PYTHONPATH=src python3 -m hermes_mobile_plugin.readme_pin "$VER"
+          if git diff --quiet -- README.md; then
+            echo "README pin already current"
+          else
+            git config user.name "github-actions[bot]"
+            git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+            git add README.md
+            git commit -m "docs(readme): sync install pin to ${VER}"
+            git push origin main
+            echo "README install pin synced to ${VER}"
+          fi
