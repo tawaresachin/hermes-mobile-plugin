@@ -46,7 +46,7 @@ read from the agent's API. The plugin adds routes, not forks.
 Into the same Python environment your Hermes Agent runs in (its venv):
 
 ```bash
-pip install git+https://github.com/tawaresachin/hermes-mobile-plugin@v0.0.21
+pip install git+https://github.com/tawaresachin/hermes-mobile-plugin@v0.0.22
 # or from the release page: pip install hermes_mobile_plugin-<ver>-py3-none-any.whl
 hermes-mobile-plugin install      # registers plugin + generates the QR
 ```
