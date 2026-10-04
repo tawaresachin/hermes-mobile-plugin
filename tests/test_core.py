@@ -104,3 +104,19 @@ def test_qr_uri_uses_connect_scheme_and_encodes(monkeypatch):
     assert qs["url"] == ["http://100.1.2.3:8642"]
     assert qs["key"] == ["key&with=chars"]
     assert qs["version"] == [PLUGIN_VERSION]
+
+
+def test_installed_version_delegates_to_hermes_resolver(monkeypatch):
+    """ponytail: _installed_version must use hermes's own version_info,
+    never a parallel stamp reader — pin the delegation."""
+    import hermes_mobile_plugin.update_routes as ur
+    import sys
+    parent = type(sys)("hermes_cli")
+    fake_mod = type(sys)("hermes_cli.version_info")
+    fake_mod.get_version_info = lambda: type("V", (), {"display_version": "0.21.5+5832"})()
+    monkeypatch.setitem(sys.modules, "hermes_cli", parent)
+    monkeypatch.setitem(sys.modules, "hermes_cli.version_info", fake_mod)
+    assert ur._installed_version() == "0.21.5+5832"
+    # import failure path: no hermes_cli at all -> "" (no crash)
+    monkeypatch.setitem(sys.modules, "hermes_cli.version_info", None)
+    assert ur._installed_version() == ""

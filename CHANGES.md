@@ -1,5 +1,15 @@
 # Hermes Mobile QR Plugin
 
+## 0.0.22 — About row shows the real release version
+
+`_installed_version()` now delegates to Hermes's own
+`hermes_cli.version_info.get_version_info()` — the same API
+`hermes --version` uses. A git-bootstrap install that sits on a
+release base reports `0.21.5+5832` (release + commits ahead) instead
+of the stamp's `git.<sha>` fallback; untagged checkouts still
+degrade to `git.<sha>`, no-git (ZIP) installs to the stamp. The
+parallel hand-rolled stamp reader from 0.0.21 is deleted —
+`version_info` owns all of those paths natively.
 ## 0.0.21 — About-section version fixes
 
 Two About rows in the mobile app misreported on git-bootstrap Hermes

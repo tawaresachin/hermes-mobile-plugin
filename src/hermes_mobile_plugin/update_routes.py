@@ -40,29 +40,18 @@ _log_path = str(HERMES_HOME / "logs" / "mobile_update.log")
 
 
 def _installed_version() -> str:
-    # The plugin runs INSIDE the gateway process, which is the hermes
-    # install — importing the package IS the installed version, no
-    # subprocess needed.
-    version = ""
+    # ponytail: delegate to Hermes's own resolver — the same API
+    # `hermes --version` uses. It resolves the release base
+    # ("0.21.5+5832"), falls back to git.<sha> on untagged checkouts,
+    # and reads the install stamp on no-git (ZIP) installs. No
+    # parallel stamp logic here. Ceiling: spawns one git call,
+    # 3s timeout, process-cached — fine for a rarely-polled About
+    # row; not for a hot loop.
     try:
-        import hermes_cli
-        version = getattr(hermes_cli, "__version__", "") or ""
+        from hermes_cli.version_info import get_version_info
+        return str(get_version_info().display_version)
     except Exception:
-        pass
-    # ponytail: git-bootstrap installs stamp baseVersion as the literal
-    # 'unknown' — fall back to the install stamp's displayVersion
-    # (git.<sha7>), the same value `hermes --version` prints; last
-    # resort the stamp's commit. Ceiling: stamp absent -> 'unknown'
-    # (today's behavior), no crash path.
-    if version not in ("", "unknown"):
-        return version
-    try:
-        from hermes_cli.steward import read_install_stamp
-        from pm.paths import repo_root
-        s = read_install_stamp(repo_root()) or {}
-    except Exception:
-        return version
-    return str(s.get("displayVersion") or (s.get("commit") or "")[:7] or version)
+        return ""
 
 
 def _hermes_bin() -> Optional[str]:
