@@ -1,5 +1,11 @@
 # Hermes Mobile QR Plugin
 
+## 0.0.23 — update/check now sees the real repo
+
+`_repo_dir()` resolves the Hermes checkout via the native
+`_resolve_repo_dir()` (the venv parent is NOT a repo — the check ran
+git against `/`, got nothing, and the row showed no update forever).
+Now reports `behind` + both SHAs honestly; update button works.
 ## 0.0.22 — About row shows the real release version
 
 `_installed_version()` now delegates to Hermes's own

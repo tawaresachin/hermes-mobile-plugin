@@ -76,12 +76,29 @@ def _git_argv(args: list[str]) -> list[str]:
     return args
 
 
+def _repo_dir() -> Path:
+    # ponytail: reuse the resolver `hermes --version` uses — it checks the
+    # executing checkout, falls back to HERMES_HOME/hermes-agent, returns
+    # None when neither is a repo. (pm.paths.repo_root() points at the
+    # venv workspace, which has no .git — checked, wrong here. venv
+    # parents are NOT a repo either — the old bug: check reported empty
+    # SHAs / no update forever.) Ceiling: hermes absent -> venv parent.
+    try:
+        from hermes_cli.version_info import _resolve_repo_dir
+        d = _resolve_repo_dir()
+        if d is not None:
+            return d
+    except Exception:
+        pass
+    import sys
+    return Path(sys.executable).parent.parent
+
+
 def _run_check_git() -> Dict[str, Any]:
     """Report-only fallback: fetch + count, no install side effects. Same
     plumbing `hermes update --check` wraps; used when the CLI itself errors
     so the card never dead-ends."""
-    import sys
-    repo = Path(sys.executable).parent.parent
+    repo = _repo_dir()
     try:
         branch = subprocess.run(_git_argv(["git", "-C", str(repo), "rev-parse", "--abbrev-ref", "HEAD"]),
                                 capture_output=True, text=True, timeout=30).stdout.strip() or "main"
@@ -303,7 +320,7 @@ async def _update_version_route(request: web.Request) -> web.Response:
     sha = ""
     try:
         sha = subprocess.run(
-            _git_argv(["git", "-C", str(Path(sys.executable).parent.parent), "rev-parse", "--short", "HEAD"]),
+            _git_argv(["git", "-C", str(_repo_dir()), "rev-parse", "--short", "HEAD"]),
             capture_output=True, text=True, timeout=10).stdout.strip()
     except Exception:
         pass
