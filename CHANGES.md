@@ -1,5 +1,12 @@
 # Hermes Mobile QR Plugin
 
+## 0.0.24 — _repo_dir probes .git
+
+`_resolve_repo_dir()` alone fails under the toolchain
+interpreter (no `hermes_constants` pre-bootstrap -> returns the
+toolchain root, no .git). Probe HERMES_HOME/hermes-agent, the native
+resolver, and the venv parent for a real .git instead. Verified:
+check reports SHAs + behind on the toolchain-gateway host.
 ## 0.0.23 — update/check now sees the real repo
 
 `_repo_dir()` resolves the Hermes checkout via the native

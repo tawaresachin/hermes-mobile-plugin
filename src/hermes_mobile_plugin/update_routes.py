@@ -77,21 +77,31 @@ def _git_argv(args: list[str]) -> list[str]:
 
 
 def _repo_dir() -> Path:
-    # ponytail: reuse the resolver `hermes --version` uses — it checks the
-    # executing checkout, falls back to HERMES_HOME/hermes-agent, returns
-    # None when neither is a repo. (pm.paths.repo_root() points at the
-    # venv workspace, which has no .git — checked, wrong here. venv
-    # parents are NOT a repo either — the old bug: check reported empty
-    # SHAs / no update forever.) Ceiling: hermes absent -> venv parent.
+    # ponytail: find the checkout by probing .git — hermes's own
+    # _resolve_repo_dir needs hermes_constants importable, which it is
+    # not under the toolchain interpreter pre-bootstrap (returned the
+    # toolchain root, no .git -> empty SHAs, no update forever). Also
+    # pm.paths.repo_root() is the venv workspace (no .git). Candidates
+    # in confidence order; last resort venv parent. Ceiling: none of
+    # them a repo -> git queries return empty, check reports ok:false.
+    import os
+    import sys
+    cands = []
+    hh = os.environ.get("HERMES_HOME")
+    if hh:
+        cands.append(Path(hh) / "hermes-agent")
     try:
         from hermes_cli.version_info import _resolve_repo_dir
         d = _resolve_repo_dir()
         if d is not None:
-            return d
+            cands.append(Path(d))
     except Exception:
         pass
-    import sys
-    return Path(sys.executable).parent.parent
+    cands.append(Path(sys.executable).parent.parent)
+    for c in cands:
+        if (c / ".git").exists():
+            return c
+    return cands[-1]
 
 
 def _run_check_git() -> Dict[str, Any]:
