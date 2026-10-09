@@ -61,6 +61,30 @@ def _hermes_bin() -> Optional[str]:
     return find_hermes_cli()
 
 
+def _heal_step_args() -> list[str]:
+    """argv to re-seed the gateway's runtime venv after `hermes update`
+    rotates it (which drops the plugin + its qrcode/pyyaml/aiohttp deps,
+    so the restarted gateway 404s every /api/mobile/* route).
+
+    Runs the standalone heal script (pure stdlib, ships next to this
+    module) under any python3; it does the real pip work via the venv's
+    own interpreter. Returns [] when the script or a python3 cannot be
+    located — the step then no-ops and the update chain still proceeds.
+    ponytail: best-effort heal, never blocks the update.
+    """
+    import shutil
+    script = Path(__file__).with_name("heal_runtime_venv.py")
+    if not script.is_file():
+        return []
+    py = shutil.which("python3") or shutil.which("python")
+    if py is None:
+        hermes_bin = _hermes_bin()
+        py = str(Path(hermes_bin).parent / ("python.exe" if os.name == "nt" else "python3")) if hermes_bin else None
+    if py is None:
+        return []
+    return [py, str(script)]
+
+
 def _git_argv(args: list[str]) -> list[str]:
     """Reset SIGCHLD before exec'ing git.
 
@@ -223,8 +247,15 @@ async def _update_apply_route(request: web.Request) -> web.Response:
         # gateway dying mid-update.
         # PowerShell single-quoted strings escape ' by doubling it.
         ps_hermes = hermes.replace("'", "''")
+        # Re-seed the runtime venv after the update (same as the POSIX
+        # chain); PowerShell single-quotes, internal ' doubled.
+        heal = _heal_step_args()
+        ps_heal = (
+            "; " + " ".join(f"'{a.replace(chr(39), chr(39) * 2)}'" for a in heal)
+            if heal else ""
+        )
         cmd = ["powershell", "-NoProfile", "-Command",
-               f"Start-Sleep 2; & '{ps_hermes}' update --yes; & '{ps_hermes}' gateway restart"]
+               f"Start-Sleep 2; & '{ps_hermes}' update --yes{ps_heal}; & '{ps_hermes}' gateway restart"]
         detach = {"creationflags": 0x00000008 | 0x00000200}  # DETACHED|NEW_GROUP
     else:
         # Restart authority depends on topology:
@@ -249,9 +280,12 @@ async def _update_apply_route(request: web.Request) -> web.Response:
         # (waitpid failure -> exit 1, no code swap). The perl wrapper resets
         # it to the default handler before exec'ing. Skipped on hosts
         # without perl — the SIGCHLD quirk is Termux-specific.
+        heal = _heal_step_args()
+        heal_step = f"{shlex.quote(' '.join(heal))} 2>&1; " if heal else ""
         script = (
             f"sleep 2; "
             f"{shlex.quote(hermes)} update --yes 2>&1; "
+            f"{heal_step}"
             f"{restart_cmd} 2>&1"
         )
         import shutil
