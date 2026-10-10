@@ -1,5 +1,16 @@
 # Hermes Mobile QR Plugin
 
+## 0.0.25 — apply chain re-seeds the runtime venv after `hermes update`
+
+`hermes update` rotates the isolated runtime venv, dropping the plugin and
+its pip deps (qrcode/pyyaml/aiohttp); the restarted gateway then fails
+`import hermes_mobile_plugin` and every `/api/mobile/*` route 404s. The
+update/apply route now runs a standalone heal step
+(`heal_runtime_venv.py`: ensurepip -> pip deps -> .pth -> import probe)
+between `hermes update` and the gateway restart, POSIX and Windows.
+Best-effort: it never blocks the update. Live-verified: wiped a rotated
+venv back to the broken state, ran the heal, plugin + deps import again.
+
 ## 0.0.24 — _repo_dir probes .git
 
 `_resolve_repo_dir()` alone fails under the toolchain
