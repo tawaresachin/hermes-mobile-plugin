@@ -1,6 +1,6 @@
 # Hermes Mobile QR Plugin
 
-## 0.0.25 — apply chain re-seeds the runtime venv after `hermes update`
+## 0.0.26 — apply chain re-seeds the runtime venv after `hermes update`
 
 `hermes update` rotates the isolated runtime venv, dropping the plugin and
 its pip deps (qrcode/pyyaml/aiohttp); the restarted gateway then fails
