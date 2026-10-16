@@ -1,6 +1,6 @@
 # Hermes Mobile QR Plugin
 
-## 0.0.27 — cross-platform compat: Windows venv detection, macOS liveness, working update-apply heal
+## 0.0.28 — cross-platform compat: Windows venv detection, macOS liveness, working update-apply heal
 
 Three platform seams left the mobile API broken — or a watchdog over-eager —
 on non-Linux hosts:
@@ -23,6 +23,13 @@ on non-Linux hosts:
 
 Also: corrected a stale comment on the key-display truncation constant (8, not
 20 chars). New `tests/test_platform_compat.py` pins all three (7 tests).
+
+Shipped under 0.0.28 (not 0.0.27) because the first cut shipped a stale
+**bundled** `src/hermes_mobile_plugin/plugin.yaml` (still 0.0.26, the one the
+wheel actually deploys) against a 0.0.27 root manifest — the shadowing-version
+bug the release verify step exists to catch. Now: root + bundled + pyproject
+manifests are aligned, and `tests/test_version_consistency.py` guards that the
+three version sources never diverge again.
 
 ## 0.0.26 — apply chain re-seeds the runtime venv after `hermes update`
 
