@@ -251,7 +251,7 @@ async def _update_apply_route(request: web.Request) -> web.Response:
         # chain); PowerShell single-quotes, internal ' doubled.
         heal = _heal_step_args()
         ps_heal = (
-            "; " + " ".join(f"'{a.replace(chr(39), chr(39) * 2)}'" for a in heal)
+            "; & " + " ".join(f"'{a.replace(chr(39), chr(39) * 2)}'" for a in heal)
             if heal else ""
         )
         cmd = ["powershell", "-NoProfile", "-Command",
@@ -281,7 +281,11 @@ async def _update_apply_route(request: web.Request) -> web.Response:
         # it to the default handler before exec'ing. Skipped on hosts
         # without perl — the SIGCHLD quirk is Termux-specific.
         heal = _heal_step_args()
-        heal_step = f"{shlex.quote(' '.join(heal))} 2>&1; " if heal else ""
+        # Quote EACH argv item separately and join: heal is [python, script],
+        # two args. Quoting their joined string produces one shell word with a
+        # space in it that bash can't exec (rc 127) — the heal silently no-op'd
+        # and every /api/mobile/* route 404'd after a gateway update.
+        heal_step = " ".join(shlex.quote(a) for a in heal) + " 2>&1; " if heal else ""
         script = (
             f"sleep 2; "
             f"{shlex.quote(hermes)} update --yes 2>&1; "

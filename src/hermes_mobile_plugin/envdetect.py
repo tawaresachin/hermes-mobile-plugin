@@ -30,8 +30,14 @@ INSTALLS_DIR: Final[Path] = HERMES_HOME / "installs"
 
 def _is_runtime_venv(v: Path) -> bool:
     """A runtime venv is the install-time venv, not the plugin's own
-    deployment directory: it has bin/python and is NOT inside plugins/."""
-    if not (v / "bin" / "python").exists():
+    deployment directory: it has bin/python (POSIX) or Scripts/python.exe
+    (Windows) and is NOT inside plugins/. Mirrors heal_runtime_venv's
+    layout check so the two modules agree on what a Windows venv looks
+    like — a POSIX-only probe here made find_runtime_venv() return None on
+    every Windows isolated-venv host and the plugin never landed in the
+    gateway's venv (its /api/mobile/* routes then 404)."""
+    if not ((v / "bin" / "python").exists()
+            or (v / "Scripts" / "python.exe").exists()):
         return False
     try:
         v.resolve().relative_to(HERMES_HOME / "plugins")
@@ -103,7 +109,13 @@ def _venv_from_sys_path() -> Path | None:
         if not entry:
             continue
         # .../venv/lib/python3.14/site-packages  ->  .../venv
-        m = re.search(r"(.*)/(site-packages|python\d+\.\d+/site-packages)$", entry)
+        # Normalize Windows backslash separators so the forward-slash regex
+        # also matches a native C:\...\venv\Lib\python3.12\site-packages entry;
+        # on POSIX the replace is a no-op.
+        m = re.search(
+            r"(.*)/(site-packages|python\d+\.\d+/site-packages)$",
+            entry.replace("\\", "/"),
+        )
         if not m:
             continue
         venv = Path(m.group(1))

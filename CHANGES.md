@@ -1,5 +1,29 @@
 # Hermes Mobile QR Plugin
 
+## 0.0.27 — cross-platform compat: Windows venv detection, macOS liveness, working update-apply heal
+
+Three platform seams left the mobile API broken — or a watchdog over-eager —
+on non-Linux hosts:
+
+- **Update/apply heal no-op (POSIX + Windows):** the post-update heal step
+  was spliced into the shell as a single quoted word (POSIX `bash` → `rc=127`;
+  Windows args without the `&` call operator → inert), so the runtime venv was
+  never re-seeded and every `/api/mobile/*` route 404'd after `hermes update`.
+  Each argv item is now quoted separately; the Windows branch invokes via `&`.
+- **Windows venv detection:** `envdetect._is_runtime_venv` only probed the
+  POSIX `bin/python` layout, so `find_runtime_venv()` returned None on every
+  Windows isolated-venv host and the plugin never landed in the gateway's venv.
+  It now also recognises `Scripts/python.exe` (matching heal_runtime_venv), and
+  `_venv_from_sys_path` normalises backslash-separated site-packages entries.
+- **macOS gateway liveness:** the "alive but /health silent → don't restart"
+  guard read `/proc`, which does not exist on macOS, so a healthy, busy gateway
+  was needlessly stopped and restarted. It now trusts a live spawned pid
+  cross-platform (`os.kill(0)`/`OpenProcess`) and falls back to `pgrep` where
+  `/proc` is absent.
+
+Also: corrected a stale comment on the key-display truncation constant (8, not
+20 chars). New `tests/test_platform_compat.py` pins all three (7 tests).
+
 ## 0.0.26 — apply chain re-seeds the runtime venv after `hermes update`
 
 `hermes update` rotates the isolated runtime venv, dropping the plugin and

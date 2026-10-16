@@ -93,33 +93,44 @@ class GatewaySupervisor:
     def gateway_process_exists(self) -> bool:
         """True when ANY live hermes-gateway process holds the port.
 
-        The supervisor only supervises a gateway IT started, so a live
-        process in our own spawned set is the "alive" signal; a foreign
-        hermes process on the host is ignored (we never stop/restart it).
-        ponytail: /proc argv scan, single-host box — good enough here;
-        upgrade to gateway.status.looks_like_gateway_command_line if it
-        ever spans hosts/process managers.
+        A gateway we SPAWNED is trusted by liveness alone: we launch it as
+        ``hermes gateway run``, so a live pid in our own spawned set IS the
+        gateway. ``pid_alive()`` is cross-platform (``os.kill(pid, 0)`` on
+        POSIX, ``OpenProcess`` on Windows). A /proc-only scan — which this
+        used — dead'd on macOS (no /proc), so the "alive but /health
+        silent" guard never fired and the watchdog would stop+restart a
+        healthy, busy gateway. Foreign (boot-time) gateways we did not spawn
+        are confirmed separately: /proc argv scan on Linux, a pgrep fallback
+        where /proc is absent (macOS); on Windows neither is available and
+        the spawned-pid check already covers the gateway we manage.
         """
-        spawned = getattr(self, "_spawned_pids", [])
-        for pid in spawned:
-            pid_dir = Path("/proc", str(pid))
-            if pid_dir.exists():
+        # 1) A gateway we started ourselves: an alive pid == live gateway.
+        for pid in getattr(self, "_spawned_pids", []):
+            if pid and pid_alive(pid):
+                return True
+        # 2) A boot-time gateway we did not spawn: confirm via the host's
+        #    process table (we never stop/restart it, but we must not
+        #    mistake its /health slowness for a crash either).
+        if Path("/proc").exists():
+            for pid_dir in Path("/proc").glob("[0-9]*"):
                 try:
                     argv = pid_dir.joinpath("cmdline").read_bytes().replace(b"\0", b" ")
                 except OSError:
-                    argv = b""
-                if b"gateway" in argv and b"run" in argv:
+                    continue
+                if b"gateway" in argv and b"run" in argv and b"hermes" in argv:
                     return True
-        # Boot-time gateway we did not spawn ourselves: trust it too, via
-        # pid-file or the /proc scan of the host's `hermes gateway run`.
-        for pid_dir in Path("/proc").glob("[0-9]*"):
-            try:
-                argv = pid_dir.joinpath("cmdline").read_bytes().replace(b"\0", b" ")
-            except OSError:
-                continue
-            if b"gateway" in argv and b"run" in argv and b"hermes" in argv:
-                return True
-        return False
+            return False
+        # No /proc (macOS/BSD): ask pgrep. Windows has no pgrep either — the
+        # spawned-pid check above already returned True for the gateway we
+        # manage, so reaching here means there is no foreign gateway to find.
+        try:
+            out = subprocess.run(
+                ["pgrep", "-f", "hermes.*gateway.*run"],
+                capture_output=True, text=True, timeout=10,
+            ).stdout
+            return bool(out.strip())
+        except Exception:
+            return False
 
     def restart_gateway(self) -> bool:
         """Attempt to restart the Hermes Agent gateway.

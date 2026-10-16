@@ -171,7 +171,8 @@ QR_BOX_SIZE: Final[int] = 10
 QR_BORDER: Final[int] = 4
 
 # Security. The display prefix is deliberately short: a pairing QR may sit
-# open on a screen, and 20 chars of a 32-char key is ~60% of the secret.
+# open on a screen, so we expose only ~8 of the 32 key chars (~25%) — enough
+# to recognise the key, not enough to reconstruct the secret.
 API_KEY_DISPLAY_TRUNCATION: Final[int] = 8
 
 
