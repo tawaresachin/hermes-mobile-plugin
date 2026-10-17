@@ -26,10 +26,15 @@ HERMES_BIN="$(command -v hermes 2>/dev/null || true)"
 HERMES_PY=""
 if [ -n "$HERMES_BIN" ]; then
     BIN_DIR="$(cd "$(dirname "$HERMES_BIN")" && pwd)"
-    # 1) Interpreter sitting next to the shim (venv bin layouts).
+    # 1) Interpreter sitting next to the shim (venv bin layouts). A Windows
+    #    venv names its interpreter python.exe under Scripts/, so Git Bash
+    #    needs the .exe spellings too — install.bat remains the native
+    #    Windows path; this only lets this script find the same interpreter.
     for cand in \
         "$BIN_DIR/python3" \
         "$BIN_DIR/python" \
+        "$BIN_DIR/python3.exe" \
+        "$BIN_DIR/python.exe" \
         "$BIN_DIR/../hermes-agent/venv/bin/python3" \
         "$BIN_DIR/../venv/bin/python3"; do
         if [ -x "$cand" ] && is_py "$cand"; then HERMES_PY="$cand"; break; fi

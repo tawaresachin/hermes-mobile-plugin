@@ -160,10 +160,21 @@ UPLOADS_DIR: Final[Path] = HERMES_HOME / "mobile-uploads"
 # Tailscale configuration
 TAILSCALE_IP_PREFIX: Final[str] = "100."
 TAILSCALE_CLI_COMMAND: Final[list[str]] = ["tailscale", "ip", "-4"]
+# Interface dumps scanned for a 100.x address, one per OS family: iproute2
+# (Linux), BSD/macOS ifconfig, Windows ipconfig. Absent commands are skipped,
+# so listing all three is safe on every host — and Windows needs ipconfig:
+# its Tailscale adapter (and therefore a cross-network QR) is only visible
+# there when the `tailscale` CLI is not on PATH.
 NETWORK_COMMANDS: Final[list[list[str]]] = [
     ["ip", "addr"],
     ["ifconfig"],
+    ["ipconfig"],
 ]
+
+# Bind host seeded into platforms.api_server.extra.host at install time.
+# Hermes' api_server defaults to loopback, which the phone cannot reach even
+# though the QR advertises the LAN/Tailscale address this plugin detects.
+DEFAULT_API_SERVER_HOST: Final[str] = "0.0.0.0"
 
 # QR code configuration
 QR_ERROR_CORRECTION: Final[str] = "ERROR_CORRECT_L"

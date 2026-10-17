@@ -17,13 +17,19 @@ the restarted gateway needs to import the plugin.
 
 Steps (all idempotent — a no-op when the active venv already works):
   1. Locate the active runtime venv (newest-mtime under HERMES_HOME/installs,
-     the same rule envdetect.find_runtime_venv uses).
+     the same rule envdetect.find_runtime_venv uses) — or take the one the
+     caller passes, with the version it needs (envdetect.ensure_runtime_venv
+     does that from the installer).
   2. ensurepip if the venv has no pip (post-update venvs often don't).
-  3. pip install the plugin's third-party deps (pyyaml, qrcode, aiohttp).
-  4. Drop a .pth pointing at the deployed plugin dir so
+  3. Drop a pip-INSTALLED copy of the plugin: site-packages is searched
+     before .pth paths, so a copy an older installer pip'd in would keep
+     shadowing the deployed dir — the gateway kept serving the
+     pre-upgrade version.
+  4. pip install the plugin's third-party deps (pyyaml, qrcode, aiohttp).
+  5. Drop a .pth pointing at the deployed plugin dir so
      ``import hermes_mobile_plugin`` resolves (the deployed dir is not a
      pip project, so a .pth is the lazy equivalent of a pip install of it).
-  5. Probe and report; exit 0 either way.
+  6. Probe and report; exit 0 either way.
 """
 from __future__ import annotations
 
@@ -39,6 +45,9 @@ _PLUGIN_DEPS = ("pyyaml>=6.0", "qrcode>=7.4", "aiohttp>=3.8")
 # its third-party deps. yaml (not pyyaml) and aiohttp are the import names.
 _PROBE_MODULES = ("hermes_mobile_plugin", "qrcode", "yaml", "aiohttp")
 PLUGIN_SLUG = "hermes-mobile-qr"
+# The pip DISTRIBUTION name (pyproject [project].name) — what pip uninstall
+# needs to drop a stale copy of the plugin out of the venv.
+_PLUGIN_DIST = "hermes-mobile-plugin"
 
 
 def _hermes_home() -> Path:
@@ -126,6 +135,21 @@ def _can_import(venv: Path, mods: tuple[str, ...]) -> bool:
     return r is not None and r.returncode == 0
 
 
+def _installed_version(venv: Path) -> str | None:
+    """The plugin version the venv can import, or None when it cannot.
+
+    -I (isolated) so the caller's sys.path cannot answer for the venv's."""
+    py = _venv_python(venv)
+    if not py.exists():
+        return None
+    r = _run([str(py), "-I", "-c",
+              "from hermes_mobile_plugin.constants import PLUGIN_VERSION;"
+              "print(PLUGIN_VERSION)"], timeout=60)
+    if r is None or r.returncode != 0:
+        return None
+    return (r.stdout or "").strip() or None
+
+
 def _write_pth(venv: Path, target_dir: Path) -> Path | None:
     sp = _venv_site_packages(venv)
     if sp is None or not sp.is_dir():
@@ -135,10 +159,20 @@ def _write_pth(venv: Path, target_dir: Path) -> Path | None:
     return pth
 
 
-def heal() -> int:
+def heal(venv: Path | None = None, expected_version: str | None = None) -> int:
+    """Re-seed a runtime venv. Always returns 0 (best-effort by design).
+
+    venv: which venv to seed (None = the same newest-mtime rule
+    envdetect.find_runtime_venv uses, i.e. what `hermes update` rebuilt).
+    expected_version: the plugin version the caller needs importable
+    there. With it, a venv holding an OLDER copy is re-seeded instead of
+    being accepted as "already healthy" — ensure_runtime_venv calls it
+    that way, so an upgrade actually reaches the gateway.
+    """
     home = _hermes_home()
     deployed = home / "plugins" / PLUGIN_SLUG
-    venv = _find_active_venv()
+    if venv is None:
+        venv = _find_active_venv()
 
     if venv is None:
         print(f"[heal] no runtime venv under {home}/installs — nothing to do")
@@ -146,27 +180,50 @@ def heal() -> int:
     if not deployed.is_dir():
         print(f"[heal] plugin not deployed at {deployed} — nothing to heal")
         return 0
-    if _can_import(venv, _PROBE_MODULES):
-        print(f"[heal] active venv already healthy: {venv}")
+
+    have = _installed_version(venv)
+    if expected_version is None:
+        if _can_import(venv, _PROBE_MODULES):
+            print(f"[heal] active venv already healthy: {venv}")
+            return 0
+    elif have == expected_version:
+        print(f"[heal] active venv already healthy: {venv} (v{have})")
         return 0
+    else:
+        print(f"[heal] venv imports {('v' + have) if have else 'no plugin'}, "
+              f"expected v{expected_version} — re-seeding")
 
     py = _venv_python(venv)
     print(f"[heal] re-seeding runtime venv: {venv}")
 
     # 1. pip may be absent in a freshly built venv — bootstrap it.
     _run([str(py), "-m", "ensurepip"], timeout=300)
-    # 2. third-party deps.
+    # 2. drop a pip-INSTALLED copy: site-packages is searched BEFORE the .pth
+    #    written below, so a copy an older installer pip'd in stays in front
+    #    of the deployed dir — the gateway kept serving the pre-upgrade
+    #    version. The deployed dir is always the newest code.
+    _run([str(py), "-m", "pip", "uninstall", "-y", _PLUGIN_DIST], timeout=300)
+    # 3. third-party deps.
     r = _run([str(py), "-m", "pip", "install", "--quiet", *(_PLUGIN_DEPS)])
     if r is not None and r.returncode != 0:
         print(f"[heal] pip install deps failed: {r.stderr.strip()[:200]}")
-    # 3. make the deployed package importable via a .pth (the deploy dir is
+    # 4. make the deployed package importable via a .pth (the deploy dir is
     #    not a pip project, so a path file is the minimal mechanism).
     pth = _write_pth(venv, deployed)
     print(f"[heal] .pth -> {deployed}: "
           f"{'written ' + str(pth) if pth else 'site-packages not found'}")
 
-    # 4. report; exit 0 so the chain (and restart) always proceeds.
-    if _can_import(venv, _PROBE_MODULES):
+    # 5. report; exit 0 so the chain (and restart) always proceeds.
+    if expected_version is not None:
+        now = _installed_version(venv)
+        if now == expected_version:
+            print(f"[heal] OK — {venv} now imports the plugin v{now}")
+        else:
+            print(f"[heal] WARN — {venv} still imports "
+                  f"{('v' + now) if now else 'nothing'} "
+                  f"(wanted v{expected_version}); the next gateway start may "
+                  "still 404 mobile routes")
+    elif _can_import(venv, _PROBE_MODULES):
         print(f"[heal] OK — {venv} now imports the plugin + deps")
     else:
         print(f"[heal] WARN — {venv} still missing {list(_PROBE_MODULES)} after heal; "

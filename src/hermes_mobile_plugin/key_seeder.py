@@ -13,6 +13,11 @@ never clobbering user data:
 * ``.env`` — ``API_SERVER_KEY=<key>`` is appended only when no such
   line exists yet.
 
+It also seeds ``platforms.api_server.extra.host`` once (unless the user
+already set a host): the phone can only dial the LAN/Tailscale address
+this plugin advertises if the api_server is not on Hermes' loopback
+default.
+
 All functions return a report instead of raising, so installers can
 never die in this step.
 """
@@ -22,7 +27,7 @@ import secrets
 from pathlib import Path
 from typing import Final
 
-from .constants import CONFIG_PATH
+from .constants import CONFIG_PATH, DEFAULT_API_SERVER_HOST
 
 # Hermes gates api_server enablement on API_SERVER_KEY in .env; a key
 # shorter than 16 chars is treated as unset, so a seeded key must beat
@@ -113,8 +118,8 @@ def _save_config_dict(data: dict, config_path: Path) -> None:
         yaml.safe_dump(data, f, default_flow_style=False, sort_keys=False)
 
 
-def _ensure_config_key_dict(cfg: dict, key: str) -> None:
-    """Nest platforms.api_server.extra.key in-place."""
+def _ensure_extra_dict(cfg: dict) -> dict:
+    """platforms.api_server.extra in-place, creating the path as needed."""
     platforms = cfg.get("platforms")
     if not isinstance(platforms, dict):
         platforms = {}
@@ -127,7 +132,29 @@ def _ensure_config_key_dict(cfg: dict, key: str) -> None:
     if not isinstance(extra, dict):
         extra = {}
         api_server["extra"] = extra
-    extra["key"] = key
+    return extra
+
+
+def _ensure_config_key_dict(cfg: dict, key: str) -> None:
+    """Nest platforms.api_server.extra.key in-place."""
+    _ensure_extra_dict(cfg)["key"] = key
+
+
+def _ensure_config_host_dict(cfg: dict) -> bool:
+    """Nest platforms.api_server.extra.host unless the user set one.
+
+    Hermes binds the api_server to loopback unless the config says
+    otherwise, so a gateway the phone is told to dial (the QR advertises the
+    LAN/Tailscale address) is otherwise unreachable. Returns True when the
+    host was written, i.e. when config.yaml is dirty.
+    """
+    platforms = cfg.get("platforms")
+    api_server = platforms.get("api_server") if isinstance(platforms, dict) else None
+    extra = api_server.get("extra") if isinstance(api_server, dict) else None
+    if isinstance(extra, dict) and extra.get("host"):
+        return False  # explicit user choice, never overridden
+    _ensure_extra_dict(cfg)["host"] = DEFAULT_API_SERVER_HOST
+    return True
 
 
 def _write_env_key(env_path: Path, key: str) -> None:
@@ -182,7 +209,8 @@ def seed_api_key(
     config_path: Path | None = None,
     env_path: Path | None = None,
 ) -> dict:
-    """Seed a strong API key into config.yaml AND the .env file.
+    """Seed a strong API key into config.yaml AND the .env file, plus the
+    api_server bind host when the user never chose one.
 
     Args:
         config: loaded config dict (None = load it from config_path).
@@ -194,15 +222,16 @@ def seed_api_key(
         {"key": str,             # the key that is now in effect (the one
                                  # generated, or copied from the strong
                                  # side when only one side had it)
-         "seeded_config": bool,  # True when config.yaml was written
+         "seeded_config": bool,  # True when config.yaml was written (key
+                                 # and/or host)
          "seeded_env": bool,     # True when .env was written
          "reasons": [str]}      # what happened and why, for the UI
 
     Idempotent and non-clobbering: a key that is at least
-    MIN_KEY_LENGTH chars long is NEVER regenerated. When only one side
-    has a strong key, it is COPIED to the other side (so the two can
-    never disagree); only when neither side has one is a new key
-    generated and written to both.
+    MIN_KEY_LENGTH chars long is NEVER regenerated, and a host the user
+    already set is NEVER overridden. When only one side has a strong key,
+    it is COPIED to the other side (so the two can never disagree); only
+    when neither side has one is a new key generated and written to both.
 
     When ``config`` is None and config.yaml exists but cannot be read as
     a YAML mapping, nothing is written: the report comes back unseeded
@@ -235,20 +264,14 @@ def seed_api_key(
     reasons: list[str] = []
 
     if not need_config and not need_env:
-        return {
-            "key": cfg_key,
-            "seeded_config": False,
-            "seeded_env": False,
-            "reasons": ["existing API key is fine (config + .env both set)"],
-        }
-
-    if need_config and not need_env:
+        key = cfg_key
+        reasons.append("existing API key is fine (config + .env both set)")
+    elif need_config and not need_env:
         # .env has the only strong key: copy it into the config, don't
         # generate a new one that would clobber the user's existing
         # secret.
         key = env_key
         _ensure_config_key_dict(cfg, key)
-        _save_config_dict(cfg, cfg_path)
         reasons.append("copied the existing .env key into config.yaml")
     elif need_env and not need_config:
         # config has the only strong key: copy it into .env (replacing
@@ -263,15 +286,25 @@ def seed_api_key(
         # BOTH, so config and .env can never disagree about the secret.
         key = secrets.token_urlsafe(SEED_KEY_LENGTH)
         _ensure_config_key_dict(cfg, key)
-        _save_config_dict(cfg, cfg_path)
         _write_env_key(env_path, key)
         reasons.append("generated a new API key and wrote it to "
                        "config.yaml + .env")
 
+    # The phone dials the address this plugin's QR advertises (LAN or
+    # Tailscale), so the api_server must not stay on Hermes' loopback
+    # default — seeded for the same reason as the key, and an explicit host
+    # the user already set wins.
+    host_written = _ensure_config_host_dict(cfg)
+    if host_written:
+        reasons.append("allowed phone access: platforms.api_server.extra.host"
+                       f" = {DEFAULT_API_SERVER_HOST}")
+    if need_config or host_written:
+        _save_config_dict(cfg, cfg_path)
+
     logger.info("API key seed report: %s", "; ".join(reasons))
     return {
         "key": key,
-        "seeded_config": need_config,
+        "seeded_config": need_config or host_written,
         "seeded_env": need_env,
         "reasons": reasons,
     }
@@ -283,7 +316,9 @@ def print_seed_report(report: dict, step_label: str = "API key") -> None:
         print(f"   ✅ {report['reasons'][0]}")
         return
     for reason in report["reasons"]:
-        mark = "✅" if "copied" in reason or "generated" in reason else "ℹ️ "
+        mark = "✅" if any(
+            w in reason for w in ("copied", "generated", "allowed")
+        ) else "ℹ️ "
         print(f"   {mark} {reason}")
     display = report["key"][:8]
     print(f"   🔐 {step_label} in effect: {display}... "

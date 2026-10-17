@@ -21,7 +21,7 @@ import sys
 from pathlib import Path
 from typing import Final
 
-from .constants import HERMES_HOME
+from .constants import HERMES_HOME, PLUGIN_VERSION
 
 # ``installs`` under the Hermes home holds one directory per toolchain
 # hash, each with an ``environments/`` tree of runtime venvs.
@@ -159,125 +159,50 @@ def find_runtime_venv() -> Path | None:
     return candidates[0] if candidates else None
 
 
-def venv_has_module(venv: Path, module: str = "hermes_mobile_plugin") -> bool:
-    """True when the venv's python can import ``module`` already.
+def venv_module_version(
+    venv: Path | None, module: str = "hermes_mobile_plugin"
+) -> str | None:
+    """``module``'s PLUGIN_VERSION as importable from the venv, else None.
 
-    Imports with -I (isolated) so sitecustomize of the CALLER's
-    environment cannot shadow the probe — this answers "does the GATEWAY's
-    runtime venv have the plugin", not "does this shell have it". Works
-    without pip installed in the venv."""
+    -I (isolated) so the CALLER's sys.path cannot answer for the gateway's,
+    and a pure import so it works without pip in the venv. None means the
+    venv cannot import it at all. The VERSION — not mere presence — is what
+    the installer must check: a venv holding an older copy answers "yes" to
+    presence while the gateway keeps serving the old code (observed live:
+    0.0.28 served after a 0.0.32 install)."""
+    if venv is None:
+        return None
     py = _venv_pip(venv)
     if py is None or not py.exists():
-        return False
+        return None
     import subprocess
     try:
         probe = subprocess.run(
-            [str(py), "-I", "-c", f"import {module}"],
-            capture_output=True,
-            timeout=60,
+            [str(py), "-I", "-c",
+             f"from {module}.constants import PLUGIN_VERSION;print(PLUGIN_VERSION)"],
+            capture_output=True, text=True, timeout=60,
         )
-        return probe.returncode == 0
     except (OSError, subprocess.SubprocessError):
-        return False
+        return None
+    if probe.returncode != 0:
+        return None
+    return (probe.stdout or "").strip() or None
 
 
-def venv_has_pip(venv: Path) -> bool:
-    """True when the venv's python can import pip (its own site only, via
-    -I; pip is bundled with install-time venvs but a Termux/bootstrap venv
-    may not have it)."""
-    py = _venv_pip(venv)
-    if py is None or not py.exists():
-        return False
-    import subprocess
-    try:
-        probe = subprocess.run(
-            [str(py), "-I", "-c", "import pip"],
-            capture_output=True,
-            timeout=60,
-        )
-        return probe.returncode == 0
-    except (OSError, subprocess.SubprocessError):
-        return False
+def ensure_runtime_venv() -> str:
+    """Shared bridge for the shell installers (install.sh/install.bat) and
+    the install CLI step: make the GATEWAY's runtime venv import THIS
+    version of the plugin, and report one line.
 
+    The deployed plugin dir is the source of truth here (the installer
+    rewrites it just before this call) and is NOT a pip project, so the
+    repair is heal_runtime_venv.heal() — the same code path ``hermes
+    update`` uses, now version-aware so an upgrade actually lands.
 
-def bootstrap_pip(venv: Path) -> bool:
-    """Ensure the venv has a usable pip: run ensurepip when it is missing
-    (observed live: a runtime venv had no pip). Idempotent — a no-op when
-    pip already imports."""
-    if venv_has_pip(venv):
-        return True
-    py = _venv_pip(venv)
-    if py is None:
-        return False
-    import subprocess
-    try:
-        result = subprocess.run(
-            [str(py), "-m", "ensurepip"],
-            capture_output=True,
-            timeout=180,
-        )
-        return result.returncode == 0
-    except (OSError, subprocess.SubprocessError):
-        return False
-
-
-def ensure_importable(venv: Path, package_source: str, module: str = "hermes_mobile_plugin") -> bool:
-    """Make ``module`` importable from the venv's python by pip-installing
-    ``package_source`` with the venv's own pip (bootstrap with ensurepip
-    first if the venv has no pip). The final verdict probes THE GIVEN
-    MODULE (default: the plugin package the gateway must load). Returns
-    True when the venv can import it afterwards. Never deletes user data:
-    pip install is additive/update-only."""
-    if venv_has_module(venv, module):
-        return True
-    if not bootstrap_pip(venv):
-        return False
-    py = _venv_pip(venv)
-    if py is None or not py.exists():
-        return False
-    import subprocess
-    try:
-        subprocess.run(
-            [str(py), "-m", "pip", "install", "--quiet", package_source],
-            capture_output=True,
-            timeout=600,
-        )
-        return venv_has_module(venv, module)
-    except (OSError, subprocess.SubprocessError):
-        return False
-
-
-def same_interpreter_as_caller(venv: Path) -> bool:
-    """True when the venv's python is the interpreter running this code
-    (a no-install case: the plugin is already here, nothing to copy)."""
-    py = _venv_pip(venv)
-    if py is None:
-        return False
-    try:
-        return Path(py.resolve()).samefile(Path(sys.executable).resolve())
-    except OSError:
-        return False
-
-
-def ensure_runtime_venv(package_source: str | None = None) -> str:
-    """Shared bridge for the shell installers (install.sh/install.bat):
-    print a one-line status and, when the runtime venv lacks the plugin,
-    install it there. package_source is the pip-installable path of the
-    package being installed (the checkout or the deployed plugin dir);
-    when omitted it is derived the same way the CLI does it.
-
-    Returns the status line; the caller prints it (and exits 0 — this
-    MUST never fail the install: a host without isolated envs is normal).
+    Returns the status line; the caller prints it (and exits 0 — this MUST
+    never fail the install: a host without isolated envs is normal).
     """
-    if package_source is None:
-        # Same derivation as the CLI: checkout root, else the deployed
-        # plugin dir (importable in place), else the wheel name.
-        here = Path(__file__).resolve()
-        repo_root = here.parent.parent.parent
-        if (repo_root / "pyproject.toml").is_file():
-            package_source = str(repo_root)
-        else:
-            package_source = str(here.parent.parent)
+    from . import heal_runtime_venv
 
     venv = find_runtime_venv()
     if venv is None:
@@ -287,12 +212,20 @@ def ensure_runtime_venv(package_source: str | None = None) -> str:
             "(standard desktop installs do not use isolated envs)"
         )
     venv = Path(venv)
-    if same_interpreter_as_caller(venv) or venv_has_module(venv):
-        return f"✅ Runtime env already has the plugin: {venv}"
-    if ensure_importable(venv, package_source):
-        return f"✅ installed into runtime env: {venv}"
+    have = venv_module_version(venv)
+    if have == PLUGIN_VERSION:
+        return f"✅ Runtime env already has plugin v{have}: {venv}"
+
+    heal_runtime_venv.heal(venv, expected_version=PLUGIN_VERSION)
+    now = venv_module_version(venv)
+    if now == PLUGIN_VERSION:
+        return (
+            f"✅ installed plugin v{PLUGIN_VERSION} into runtime env: {venv}"
+            + (f" (replaced v{have})" if have else "")
+        )
     return (
-        f"⚠️  Could not install into runtime env {venv} — run "
-        f"`{venv}/{'Scripts' if os.name == 'nt' else 'bin'}/python -m pip install "
-        f"{package_source}` manually"
+        f"⚠️  Could not update the gateway runtime env {venv} — it still "
+        f"imports {('v' + have) if have else 'no plugin'}; the running "
+        "gateway keeps the version it already loaded. Re-run this installer "
+        "after fixing pip in that env."
     )

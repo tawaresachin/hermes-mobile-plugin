@@ -19,6 +19,7 @@ import argparse
 import logging
 import os
 import shutil
+import subprocess
 import sys
 import time
 from pathlib import Path
@@ -30,6 +31,7 @@ from .constants import (
     PLUGIN_VERSION,
     SUPERVISOR_CHECK_INTERVAL,
     SUPERVISOR_FAILURE_THRESHOLD,
+    find_hermes_cli,
     gateway_pid,
     resolve_gateway_port,
 )
@@ -63,7 +65,7 @@ def cmd_install(args: argparse.Namespace) -> int:
     print()
 
     # Step 1: Validate config
-    print("📦 Step 1/5: Validating configuration...")
+    print("📦 Step 1/6: Validating configuration...")
     config = load_hermes_config()
     warnings = validate_config(config)
     if warnings:
@@ -73,11 +75,16 @@ def cmd_install(args: argparse.Namespace) -> int:
         print("   ✅ Configuration valid")
     print()
 
-    # Step 2: Seed the API key so pairing works out of the box (config + .env)
-    print("🔑 Step 2/5: Ensuring the API key...")
+    # Step 2: Seed the API key (+ api_server bind host) so pairing works out
+    # of the box (config + .env)
+    print("🔑 Step 2/6: Ensuring the API key...")
+    config_changed = False
     try:
         report = seed_api_key(config)
         print_seed_report(report)
+        # A seeded key/host is invisible to an ALREADY-RUNNING gateway: it
+        # must be restarted for the phone to pair (see the post-install step).
+        config_changed = bool(report.get("seeded_config") or report.get("seeded_env"))
         config = load_hermes_config()  # re-load: the seeded key must flow into the QR
     except Exception as e:  # noqa: BLE001 - seeding must never fail the install
         print(f"   ⚠️  API key seeding failed: {e}")
@@ -86,7 +93,7 @@ def cmd_install(args: argparse.Namespace) -> int:
 
     # Step 3: Deploy plugin files into Hermes' plugins directory (the same
     # deployment the .bat/.sh installers and hermes-mobile-install use).
-    print("📦 Step 3/5: Deploying plugin files...")
+    print("📦 Step 3/6: Deploying plugin files...")
     try:
         copied = deploy_plugin_files(PLUGIN_DIR)
         for path in copied:
@@ -96,42 +103,43 @@ def cmd_install(args: argparse.Namespace) -> int:
         print("   Continuing anyway...")
     print()
 
-    # Step 4: Make the GATEWAY's runtime environment see the plugin. The
-    # hermes bootstrap resolves 3rd-party packages from an isolated runtime
-    # venv, not from the toolchain interpreter install.sh/bat pip'd into —
-    # so a deploy that skipped this leaves the running gateway with
-    # "No module named 'hermes_mobile_plugin'". Pure no-op when the plugin
-    # is already importable from everywhere; a one-line warning when no
-    # isolated env exists (standard desktop installs).
-    print("🔗 Step 4/5: Ensuring the gateway runtime has the plugin...")
+    # Step 4: Make the GATEWAY's runtime environment see THIS version of the
+    # plugin. The hermes bootstrap resolves 3rd-party packages from an isolated
+    # runtime venv, not from the toolchain interpreter install.sh/bat pip'd into
+    # — and a venv that already holds an OLDER copy keeps serving it, so this
+    # check is VERSION-based, not presence-based (observed live: 0.0.28 served
+    # after a 0.0.32 install; 0.0.28 predates the fail-closed auth fix). A
+    # one-line no-op on standard desktop installs, which have no isolated env.
+    print("🔗 Step 4/6: Ensuring the gateway runtime has the plugin...")
+    venv_upgraded = False
     try:
         from . import envdetect
 
         venv = envdetect.find_runtime_venv()
-        if venv is None:
-            print("   ℹ️  No isolated runtime venv detected — nothing extra to do "
-                  "(standard desktop install)")
-        else:
-            venv = Path(venv)
-            if envdetect.same_interpreter_as_caller(venv):
-                print(f"   ✅ Runtime env is this interpreter ({venv}) — already set")
-            elif envdetect.venv_has_module(venv):
-                print(f"   ✅ Runtime env already has the plugin: {venv}")
-            else:
-                print(f"   🔧 Installing into runtime env: {venv}")
-                ok = envdetect.ensure_importable(venv, str(_package_source_path()))
-                if ok:
-                    print(f"   ✅ installed into runtime env: {venv}")
-                else:
-                    print(f"   ⚠️  Could not install into runtime env {venv} — "
-                          "the gateway may not load the plugin until you do "
-                          f"`{venv}/bin/python -m pip install <this package>` manually")
+        had = envdetect.venv_module_version(venv)
+        print(f"   {envdetect.ensure_runtime_venv()}")
+        # The running gateway is on old code until restarted (see post-install).
+        venv_upgraded = (had != PLUGIN_VERSION
+                         and envdetect.venv_module_version(venv) == PLUGIN_VERSION)
     except Exception as e:  # noqa: BLE001 - must never fail the install
         print(f"   ⚠️  Runtime env detection skipped: {e}")
     print()
 
-    # Step 5: Generate QR code (with the now-guaranteed key baked in)
-    print("📷 Step 5/5: Generating QR code...")
+    # Step 5: Enable the plugin in Hermes' own registry. A deployed directory
+    # plugin is INERT until then (observed live: after a full documented
+    # install every /api/mobile/* route 404'd while `hermes plugins list` still
+    # said "not enabled"). Enabling also hot-loads it in the running gateway.
+    print("🔌 Step 5/6: Enabling the plugin in Hermes...")
+    enabled, detail = enable_plugin()
+    if enabled:
+        print(f"   ✅ {PLUGIN_NAME} enabled")
+    else:
+        print(f"   ⚠️  Could not enable the plugin automatically ({detail})")
+        print(f"      Run: hermes plugins enable {PLUGIN_NAME}")
+    print()
+
+    # Step 6: Generate QR code (with the now-guaranteed key baked in)
+    print("📷 Step 6/6: Generating QR code...")
     try:
         import asyncio
         output_path = asyncio.run(generate_qr(config, open_browser=False, save_file=True))
@@ -142,10 +150,12 @@ def cmd_install(args: argparse.Namespace) -> int:
     print()
 
     # --- Post-install: supervised gateway restart -------------------------
-    # If a gateway is already running, it is STILL the old code: it never
-    # saw the new key / plugin. Restart it under watch so the phone can
-    # pair immediately ("zero-manual install"). The plugin must never leave
-    # a gateway unwatched: the supervisor is ensured BEFORE any SIGTERM.
+    # A gateway that is already running is STILL on the old code: it never
+    # saw the new key, bind host or plugin version, so it is restarted
+    # whenever this run changed something (a run that changed nothing leaves
+    # it alone — a needless restart only SIGTERMs live chat turns). And the
+    # plugin must never leave a gateway unwatched: the supervisor is ensured
+    # BEFORE any SIGTERM.
     print("🛡️  Ensuring 24x7 gateway supervision...")
     port = resolve_gateway_port()
     health_before = _gateway_health(port)
@@ -169,12 +179,10 @@ def cmd_install(args: argparse.Namespace) -> int:
     print()
 
     restarted = False
-    if gw_running and health_before:
-        # /health already passed before any change: skip the restart (spec:
-        # "If /health already passed before any change, skip the restart").
-        print("🔄 Gateway is already healthy (port "
-              f"{port}) — no restart needed. The new API key takes effect "
-              "on the next gateway restart.")
+    if gw_running and health_before and not changed:
+        # Nothing this run wrote: the running gateway is already the truth.
+        print(f"🔄 Gateway is healthy (port {port}) and nothing changed — "
+              "no restart needed.")
     elif gw_running and sup_ensured:
         # Watchdog is up: SIGTERM the gateway; the watchdog respawns it
         # with the new config within a check cycle.
@@ -189,7 +197,7 @@ def cmd_install(args: argparse.Namespace) -> int:
     else:
         # No gateway running at all: nothing to restart. The watchdog (if
         # up) spawns one on its own 10s schedule. No 60s wait here — the
-        # QR was already generated in Step 5 with the live key baked in.
+        # QR was already generated in Step 6 with the live key baked in.
         if sup_ensured:
             print("🔄 No gateway running — the supervisor will start one "
                   "and keep it up 24/7.")
@@ -197,7 +205,7 @@ def cmd_install(args: argparse.Namespace) -> int:
     if restarted:
         # Only a running gateway that we just restarted warrants the 60s
         # wait-for-healthy + QR refresh; every other path already produced
-        # a key-baked QR in Step 5 (or has no gateway to wait for).
+        # a key-baked QR in Step 6 (or has no gateway to wait for).
         healthy = _wait_for_health(port, timeout_s=60.0)
         print("📷 Regenerating QR code with the live connection details...")
         try:
@@ -411,19 +419,33 @@ def _wait_for_health(port: int, timeout_s: float = 60.0) -> bool:
     return _gateway_health(port)
 
 
-def _package_source_path() -> str:
-    """pip-installable source for the runtime-venv install: the repo
-    checkout root when present (editable, CI/dev), else the deployed
-    plugin dir (an in-place redeploy), else the wheel name on the system
-    (standard desktop install — pip fetches it from the cache/PyPI)."""
-    here = Path(__file__).resolve()
-    repo_root = here.parent.parent.parent
-    if (repo_root / "pyproject.toml").is_file():
-        return str(repo_root)
-    deployed = here.parent.parent  # ~/.hermes/plugins/hermes-mobile-qr
-    if (deployed / "plugin.yaml").is_file():
-        return str(deployed)
-    return "hermes-mobile-plugin"
+def enable_plugin() -> tuple[bool, str]:
+    """Enable the deployed plugin in Hermes' own registry.
+
+    A deployed directory plugin stays INERT until Hermes enables it
+    (observed live: after a fully documented install every /api/mobile/*
+    route 404'd while ``hermes plugins list`` still said "not enabled").
+    Hermes' own documented CLI is used rather than writing its state store
+    directly, so the registry format stays Hermes' business; enabling also
+    hot-loads the plugin into the running gateway.
+
+    Returns (ok, detail). Never raises.
+    """
+    hermes = find_hermes_cli()
+    if not hermes:
+        return False, "the hermes launcher was not found"
+    try:
+        # List form, no shell: the only shape that works on POSIX and Windows.
+        result = subprocess.run(
+            [hermes, "plugins", "enable", PLUGIN_NAME],
+            capture_output=True, text=True, timeout=120,
+        )
+    except (OSError, subprocess.SubprocessError) as e:
+        return False, str(e)
+    if result.returncode != 0:
+        detail = (result.stderr or result.stdout or "").strip()
+        return False, detail.splitlines()[-1] if detail else f"exit {result.returncode}"
+    return True, "enabled"
 
 
 def deploy_plugin_files(target_dir: Path) -> list[Path]:

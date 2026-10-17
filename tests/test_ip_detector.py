@@ -61,6 +61,28 @@ tailscale0: flags=31<UP,BROADCAST,RUNNING,MULTICAST> mtu 1280
         result = _parse_tailscale_ip_from_output(output)
         assert result == "100.89.25.56"
 
+    def test_parse_from_windows_ipconfig_output(self):
+        """Windows: `ipconfig` (no `inet` keyword) — the Tailscale adapter is
+        only visible there when the `tailscale` CLI is missing from PATH, so
+        the parser must not depend on the iproute2/ifconfig wording."""
+        output = """
+Windows IP Configuration
+
+Ethernet adapter Tailscale:
+
+   Connection-specific DNS Suffix  . :
+   IPv4 Address. . . . . . . . . . . : 100.101.102.103
+   Subnet Mask . . . . . . . . . . . : 255.255.255.0
+   Default Gateway . . . . . . . . . :
+
+Ethernet adapter Ethernet:
+
+   IPv4 Address. . . . . . . . . . . : 192.168.1.100
+   Subnet Mask . . . . . . . . . . . : 255.255.255.0
+"""
+        result = _parse_tailscale_ip_from_output(output)
+        assert result == "100.101.102.103"
+
     def test_no_tailscale_ip(self):
         """Test when no Tailscale IP is present."""
         output = """

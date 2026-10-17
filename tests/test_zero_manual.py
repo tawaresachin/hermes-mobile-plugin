@@ -55,6 +55,11 @@ class TestKeySeeder:
         on_disk = yaml.safe_load(config_path.read_text(encoding="utf-8"))
         assert on_disk["platforms"]["api_server"]["extra"]["key"] == key
         assert on_disk["platforms"]["api_server"]["enabled"] is True
+        # The bind host is seeded too: the phone dials the LAN/Tailscale
+        # address the QR advertises, which a loopback-only api_server cannot
+        # serve (observed live: QR said 192.168.1.10:8642, gateway bound
+        # 127.0.0.1).
+        assert on_disk["platforms"]["api_server"]["extra"]["host"] == "0.0.0.0"
         # .env: single API_SERVER_KEY line with the SAME key (one secret,
         # two targets — they can never disagree)
         env_text = env_path.read_text(encoding="utf-8")
@@ -83,15 +88,42 @@ class TestKeySeeder:
 
         report = key_seeder.seed_api_key(config=None, env_path=env_path)
 
-        # Nothing written, and the report surfaces the EXISTING key — the
-        # user's secret is never regenerated or lost.
-        assert report["seeded_config"] is False
+        # The KEY is never regenerated and never lost — but the missing bind
+        # host IS seeded, which is the one write that makes the config dirty.
+        assert report["seeded_config"] is True
         assert report["seeded_env"] is False
         assert report["key"] == strong
-        assert strong in config_path.read_text(encoding="utf-8")
+        config_text = config_path.read_text(encoding="utf-8")
+        assert strong in config_text
+        assert (yaml.safe_load(config_text)["platforms"]["api_server"]["extra"]["host"]
+                == "0.0.0.0")
         env_lines = env_path.read_text(encoding="utf-8")
         assert f"API_SERVER_KEY={strong}" in env_lines
         assert "# existing stuff" in env_lines  # user content preserved
+
+    def test_user_chosen_bind_host_is_never_overridden(self, tmp_path, monkeypatch):
+        """A host the user set — loopback on purpose, say — must survive, and
+        a run that changes nothing must not claim it wrote the config."""
+        from hermes_mobile_plugin import key_seeder
+
+        config_path = tmp_path / "config.yaml"
+        strong = "d" * 64
+        config_path.write_text(
+            yaml.dump({"platforms": {"api_server": {
+                "extra": {"key": strong, "host": "127.0.0.1"}}}}),
+            encoding="utf-8",
+        )
+        env_path = tmp_path / ".env"
+        env_path.write_text(f"API_SERVER_KEY={strong}\n", encoding="utf-8")
+        monkeypatch.setattr(key_seeder, "CONFIG_PATH", config_path)
+
+        report = key_seeder.seed_api_key(config=None, env_path=env_path)
+
+        assert report["seeded_config"] is False
+        assert report["seeded_env"] is False
+        assert report["key"] == strong
+        on_disk = yaml.safe_load(config_path.read_text(encoding="utf-8"))
+        assert on_disk["platforms"]["api_server"]["extra"]["host"] == "127.0.0.1"
 
     def test_weak_env_key_replaced_by_strong_config_key(self, tmp_path, monkeypatch):
         """Never clobber: when config has the only strong key, it is COPIED
@@ -270,67 +302,79 @@ class TestRuntimeVenvDetection:
         assert found is not None
         assert found != plugins_venv
 
-    def test_venv_module_probe_is_honest(self, monkeypatch):
-        """venv_has_module must reflect the VENV's own site, not the
+    def test_venv_module_version_probe_is_honest(self, monkeypatch):
+        """venv_module_version must reflect the VENV's own site, not the
         caller's sys.path (an -I probe). Probing the TEST runner's own
-        interpreter: 'sys' always imports; a bogus module never does."""
+        interpreter: it has the plugin, so the real version comes back; a
+        module that cannot exist anywhere comes back as None."""
         import sys
         from hermes_mobile_plugin import envdetect
+        from hermes_mobile_plugin.constants import PLUGIN_VERSION
 
         monkeypatch.setattr(envdetect, "_venv_pip", lambda v: Path(sys.executable))
         probe = type("P", (), {"_py": sys.executable})
-        assert envdetect.venv_has_module(probe, "sys") is True
+        assert envdetect.venv_module_version(probe) == PLUGIN_VERSION
         # The negative probe: a module that cannot exist anywhere.
-        assert envdetect.venv_has_module(probe, "definitely_not_a_module_xyz") is False
+        assert envdetect.venv_module_version(probe, "definitely_not_a_module_xyz") is None
+        assert envdetect.venv_module_version(None) is None
 
-    def test_same_interpreter_as_caller(self, monkeypatch):
-        import sys
-        from hermes_mobile_plugin import envdetect
+    def test_stale_runtime_venv_is_upgraded_to_the_expected_version(
+            self, tmp_path, monkeypatch):
+        """End-to-end on a REAL venv: a venv that cannot import the plugin is
+        re-seeded and afterwards reports the EXPECTED version — the live bug
+        was a venv that kept serving 0.0.28 after a 0.0.32 install.
 
-        monkeypatch.setattr(envdetect, "_venv_pip", lambda v: Path(sys.executable))
-        assert envdetect.same_interpreter_as_caller(object()) is True
+        Network-free deliberately: _PLUGIN_DEPS is emptied so exactly the
+        version-aware decision plus the .pth repair are under test.
+        """
+        from hermes_mobile_plugin import envdetect, heal_runtime_venv
+        from hermes_mobile_plugin.constants import PLUGIN_VERSION
 
-        monkeypatch.setattr(
-            envdetect,
-            "_venv_pip",
-            lambda v: Path("/nonexistent/venv/bin/python"),
-        )
-        assert envdetect.same_interpreter_as_caller(object()) is False
+        installs = tmp_path / "installs"
+        venv = installs / "aaaa" / "environments" / "1111" / "venv"
+        venv.parent.mkdir(parents=True)
+        subprocess.run([sys.executable, "-m", "venv", str(venv)],
+                       check=True, capture_output=True)
+        assert envdetect.venv_module_version(venv) is None  # fresh: nothing yet
 
-    def test_ensure_importable_real_venv_end_to_end(self, tmp_path):
-        """End-to-end on a REAL venv: the venv's own pip installs a
-        package (ensurepip bootstraps if pip is missing) and the module
-        becomes importable from that venv — the exact live-machine fix."""
-        if os.name == "nt" or sys.version_info < (3, 7):
-            pytest.skip("venv/ensurepip not available here")
-        from hermes_mobile_plugin import envdetect
+        # The "deployed" plugin as deploy_plugin_files leaves it: a plain
+        # package dir (no pyproject) exposing the version the probe reads.
+        home = tmp_path / "home"
+        deployed = home / "plugins" / "hermes-mobile-qr" / "hermes_mobile_plugin"
+        deployed.mkdir(parents=True)
+        (deployed / "__init__.py").write_text("", encoding="utf-8")
+        (deployed / "constants.py").write_text(
+            f'PLUGIN_VERSION = "{PLUGIN_VERSION}"\n', encoding="utf-8")
 
-        venv = tmp_path / "runtime-venv"
-        subprocess.run(
-            [sys.executable, "-m", "venv", str(venv)],
-            check=True,
-            capture_output=True,
-        )
-        real_py = venv / ("Scripts" if os.name == "nt" else "bin") / "python"
-        if not real_py.exists():
-            pytest.skip("real venv python missing")
+        monkeypatch.setattr(envdetect, "INSTALLS_DIR", installs)
+        monkeypatch.setattr(envdetect, "HERMES_HOME", home)
+        monkeypatch.setattr(heal_runtime_venv, "_hermes_home", lambda: home)
+        monkeypatch.setattr(heal_runtime_venv, "_PLUGIN_DEPS", ())
 
-        # A trivial pip-installable package as the "source"
-        pkg = tmp_path / "pkg"
-        (pkg / "mytinyplugin").mkdir(parents=True)
-        (pkg / "mytinyplugin" / "__init__.py").write_text("V = 1\n", encoding="utf-8")
-        (pkg / "pyproject.toml").write_text(
-            "[build-system]\nrequires = ['setuptools']\n"
-            "build-backend = 'setuptools.build_meta'\n"
-            "[project]\nname = 'mytinyplugin'\nversion = '0.1.0'\n",
-            encoding="utf-8",
-        )
+        msg = envdetect.ensure_runtime_venv()
 
-        assert envdetect.venv_has_module(venv, "mytinyplugin") is False
-        assert envdetect.ensure_importable(venv, str(pkg), "mytinyplugin") is True
-        assert envdetect.venv_has_module(venv, "mytinyplugin") is True
-        # idempotent second call is a fast no-op
-        assert envdetect.ensure_importable(venv, str(pkg), "mytinyplugin") is True
+        assert PLUGIN_VERSION in msg and "⚠️" not in msg, msg
+        assert envdetect.venv_module_version(venv) == PLUGIN_VERSION
+
+    def test_stale_version_is_never_taken_as_healthy(self, tmp_path, monkeypatch, capsys):
+        """heal() given an expected version must not accept a venv that
+        cannot import it as "already healthy" (version-blind early exit was
+        the 0.0.28-vs-0.0.32 bug)."""
+        from hermes_mobile_plugin import heal_runtime_venv
+
+        home = tmp_path / "home"
+        (home / "plugins" / "hermes-mobile-qr").mkdir(parents=True)
+        fake_python = tmp_path / "venv" / "bin" / "python"
+        fake_python.parent.mkdir(parents=True)
+        fake_python.write_text("#!/bin/sh\nexit 1\n", encoding="utf-8")
+
+        monkeypatch.setattr(heal_runtime_venv, "_hermes_home", lambda: home)
+
+        assert heal_runtime_venv.heal(tmp_path / "venv",
+                                      expected_version="9.9.9") == 0
+        out = capsys.readouterr().out
+        assert "re-seeding" in out
+        assert "already healthy" not in out
 
 
 # ---------------------------------------------------------------------------
@@ -407,3 +451,50 @@ def test_install_plugin_reports_deploy_and_never_raises(tmp_path, capsys, monkey
     assert cli.install_plugin(ns) == 0
     out = capsys.readouterr().out
     assert "deployed" in out.lower()
+
+
+def test_enable_plugin_uses_the_hermes_cli_argv(monkeypatch):
+    """Enabling goes through Hermes' own CLI — a deployed directory plugin is
+    INERT until then (every /api/mobile/* route 404s) — as an argv list with
+    no shell, so POSIX and Windows behave identically."""
+    from hermes_mobile_plugin import cli
+    from hermes_mobile_plugin.constants import PLUGIN_NAME
+
+    calls = []
+
+    def fake_run(argv, **kw):
+        calls.append((argv, kw))
+        return subprocess.CompletedProcess(argv, 0, stdout="enabled", stderr="")
+
+    monkeypatch.setattr(cli, "find_hermes_cli", lambda: "/usr/bin/hermes")
+    monkeypatch.setattr(cli.subprocess, "run", fake_run)
+
+    ok, detail = cli.enable_plugin()
+
+    assert ok is True and detail == "enabled"
+    argv, kw = calls[0]
+    assert argv == ["/usr/bin/hermes", "plugins", "enable", PLUGIN_NAME]
+    assert "shell" not in kw  # a list, not a shell string: Windows-safe
+
+
+def test_enable_plugin_never_raises(monkeypatch):
+    """A missing launcher or a failing CLI degrades to (False, why) so the
+    install continues and can still print the one command the user needs."""
+    from hermes_mobile_plugin import cli
+
+    monkeypatch.setattr(cli, "find_hermes_cli", lambda: None)
+    ok, detail = cli.enable_plugin()
+    assert ok is False and "hermes" in detail
+
+    monkeypatch.setattr(cli, "find_hermes_cli", lambda: "hermes")
+    monkeypatch.setattr(cli.subprocess, "run",
+                        lambda argv, **kw: subprocess.CompletedProcess(
+                            argv, 1, stdout="", stderr="boom\nplugin not found"))
+    ok, detail = cli.enable_plugin()
+    assert ok is False and detail == "plugin not found"
+
+    def explode(argv, **kw):
+        raise OSError("no such file")
+
+    monkeypatch.setattr(cli.subprocess, "run", explode)
+    assert cli.enable_plugin()[0] is False

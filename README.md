@@ -43,13 +43,22 @@ read from the agent's API. The plugin adds routes, not forks.
 **[Download the latest release →](https://github.com/tawaresachin/hermes-mobile-plugin/releases/latest)**
 (every release ships a pure-Python `py3-none-any` wheel + sdist with `SHA256SUMS` checksums, built and version-verified by CI)
 
-Into the same Python environment your Hermes Agent runs in (its venv):
+Into the same Python environment your Hermes Agent runs in (its venv) — Python 3.10 or
+newer is required (macOS has no `pip` command; use `python3 -m pip`):
 
 ```bash
-pip install git+https://github.com/tawaresachin/hermes-mobile-plugin@v0.0.32
+python3 -m pip install git+https://github.com/tawaresachin/hermes-mobile-plugin@v0.0.32
 # or from the release page: pip install hermes_mobile_plugin-<ver>-py3-none-any.whl
-hermes-mobile-plugin install      # registers plugin + generates the QR
+hermes-mobile-plugin install   # key + bind host + deploy + enable + runtime env + gateway + QR
+hermes plugins list            # must show: hermes-mobile-qr   enabled
 ```
+
+`install` enables the plugin in Hermes' registry itself (`hermes plugins enable
+hermes-mobile-qr` — the one command a directory plugin needs, without which every
+`/api/mobile/*` route 404s) and seeds `platforms.api_server.extra.host = 0.0.0.0`,
+because the gateway otherwise binds `127.0.0.1`, an address the phone cannot dial.
+A host you already set is never overridden, so a deliberate loopback install stays
+exactly as you left it.
 
 The plugin is pure Python — the one wheel runs unchanged on Windows, macOS, Linux and
 Termux (native deps resolve per-OS from PyPI at install time). Not on PyPI; GitHub Releases
@@ -68,11 +77,12 @@ place, and nothing in the user's data is ever clobbered.
 | Step | What it does |
 |---|---|
 | **Validates** config | Surfaces warnings (bad port type, short key) without blocking. |
-| **Seeds the API key** | If `platforms.api_server.extra.key` / `API_SERVER_KEY` in `~/.hermes/.env` are missing or < 16 chars, a `secrets.token_urlsafe(48)` key is generated and written to **both** (config with a `.bak` backup, `.env` line replaced/appended, 0600). A strong existing key is kept; a weak line on one side is replaced with the strong one from the other side. |
+| **Seeds the API key** | If `platforms.api_server.extra.key` / `API_SERVER_KEY` in `~/.hermes/.env` are missing or < 16 chars, a `secrets.token_urlsafe(48)` key is generated and written to **both** (config with a `.bak` backup, `.env` line replaced/appended, 0600). A strong existing key is kept; a weak line on one side is replaced with the strong one from the other side. `platforms.api_server.extra.host` is seeded to `0.0.0.0` in the same write — the QR advertises a LAN/Tailscale address, which a loopback-bound gateway cannot serve — and a host the user already set is never overridden. |
 | **Deploys** the plugin files | Into the Hermes plugins dir, replacing stale copies. |
-| **Installs into the gateway's runtime env** | On hermes-bootstrap hosts (Termux/proot) the gateway runs 3rd-party packages from an isolated venv under `~/.hermes/installs/…/venv`, not the toolchain interpreter — the install detects it (running-gateway pidfile → `/proc/<pid>/exe` → in-process sys.path → newest-mtime scan) and `pip install`s the plugin into it (`ensurepip` first if the venv has no pip). No isolated envs → a one-line notice, install continues. |
+| **Enables** the plugin | `hermes plugins enable hermes-mobile-qr`: a deployed directory plugin is inert until then (every `/api/mobile/*` route 404s), and enabling also hot-loads it in the running gateway. If the launcher cannot be found, the install prints that one command instead of failing. |
+| **Installs into the gateway's runtime env** | On hermes-bootstrap hosts (Termux/proot) the gateway runs 3rd-party packages from an isolated venv under `~/.hermes/installs/…/venv`, not the toolchain interpreter — the install detects it (running-gateway pidfile → `/proc/<pid>/exe` → in-process sys.path → newest-mtime scan) and makes it import **this** version: `ensurepip` if needed, `pip uninstall` of any stale installed copy, deps, then a `.pth` to the deployed dir (the same heal `hermes update` runs). "Already has the plugin" is never accepted for an older version. No isolated envs → a one-line notice, install continues. |
 | **Generates the QR** | With the (now guaranteed) key baked in; URL/port follow the host's real settings. |
-| **Supervises the gateway** | The 24/7 watchdog is ensured **before** any restart: a running gateway that is unhealthy is SIGTERM'd so the watchdog respawns it with the new config; a healthy one is left alone. The install then waits up to 60 s for `/health` on the **resolved port** and regenerates the QR. |
+| **Supervises the gateway** | The 24/7 watchdog is ensured **before** any restart. A running gateway is restarted when this install changed something (new key, new bind host, new plugin version — it is still on the old code otherwise) and left untouched when nothing changed. The install then waits up to 60 s for `/health` on the **resolved port** and regenerates the QR. |
 
 Port precedence everywhere (`status`, watchdog, QR): `platforms.api_server.extra.port` →
 `API_SERVER_PORT` env → `8642`.

@@ -7,7 +7,11 @@ import os
 import sys
 
 
-from hermes_mobile_plugin.constants import find_hermes_cli, gateway_health_url
+from hermes_mobile_plugin.constants import (
+    NETWORK_COMMANDS,
+    find_hermes_cli,
+    gateway_health_url,
+)
 from hermes_mobile_plugin.supervisor import _detach_kwargs, pid_alive, terminate_pid
 from hermes_mobile_plugin.qr_generator import get_html_template
 
@@ -15,6 +19,17 @@ from hermes_mobile_plugin.qr_generator import get_html_template
 def test_health_url_follows_port():
     assert gateway_health_url(9999) == "http://127.0.0.1:9999/health"
     assert "8642" in gateway_health_url()
+
+
+def test_network_commands_cover_all_three_os_families():
+    """A 100.x (Tailscale) address must be findable on every supported host:
+    iproute2, BSD/macOS ifconfig and Windows ipconfig. Windows matters most —
+    it has no ifconfig, and the socket fallback returns the LAN address, so
+    the Tailscale adapter must be reachable through ipconfig."""
+    flat = [" ".join(cmd) for cmd in NETWORK_COMMANDS]
+    assert "ip addr" in flat
+    assert "ifconfig" in flat
+    assert "ipconfig" in flat
 
 
 def test_find_hermes_cli_returns_str_or_none():

@@ -39,25 +39,28 @@ def _run_command(cmd: list[str], timeout: int = 2) -> Optional[str]:
 
 
 def _parse_tailscale_ip_from_output(output: str) -> Optional[str]:
-    """Parse Tailscale IP from command output.
+    """First 100.x IPv4 address in an interface dump, or None.
+
+    Token-based on purpose: `ip addr` and `ifconfig` print
+    ``inet 100.x.x.x/32`` while Windows `ipconfig` prints
+    ``IPv4 Address. . . : 100.x.x.x``. Matching the address itself accepts
+    all three, and the 100. prefix keeps 192.168.x.x/255.x.x.x out.
 
     Args:
         output: Command output text.
 
     Returns:
-        First IP starting with Tailscale prefix, or None.
+        First IPv4 address starting with the Tailscale prefix, or None.
     """
     if not output:
         return None
 
     for line in output.splitlines():
-        # Look for 'inet 100.x.x.x' pattern
-        if "inet " in line and TAILSCALE_IP_PREFIX in line:
-            parts = line.strip().split()
-            for part in parts:
-                if part.startswith(TAILSCALE_IP_PREFIX):
-                    # Remove CIDR notation if present
-                    return part.split("/")[0]
+        # "/" splits off CIDR notation, so the bare address is its own token.
+        for part in line.replace("/", " ").split():
+            token = part.strip().rstrip(",;")
+            if token.startswith(TAILSCALE_IP_PREFIX) and is_valid_ip(token):
+                return token
     return None
 
 
