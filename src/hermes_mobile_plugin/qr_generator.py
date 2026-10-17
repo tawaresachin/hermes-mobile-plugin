@@ -1,6 +1,5 @@
 """QR code generation for Hermes Mobile App connection."""
 
-import json
 from html import escape
 from pathlib import Path
 from urllib.parse import quote
@@ -17,7 +16,6 @@ except ImportError:
 
 from .config import load_hermes_config, validate_config
 from .constants import (
-    PLUGIN_DIR,
     QR_BORDER,
     QR_BOX_SIZE,
     QR_ERROR_CORRECTION,

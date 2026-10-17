@@ -577,7 +577,7 @@ Examples:
     subparsers = parser.add_subparsers(dest="command", help="Available commands")
 
     # Install command
-    install_parser = subparsers.add_parser(
+    subparsers.add_parser(
         "install",
         help="Full setup: install, generate QR, start supervisor",
         description="Complete one-command installation with QR generation and 24x7 gateway monitoring",

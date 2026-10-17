@@ -1,8 +1,6 @@
 """Configuration loader for Hermes Mobile Plugin."""
 
 import logging
-from pathlib import Path
-from typing import Optional
 
 try:
     import yaml
@@ -41,6 +39,11 @@ def load_hermes_config() -> dict:
             config = yaml.safe_load(f)
             if config is None:
                 return {}
+            if not isinstance(config, dict):
+                raise ConfigError(
+                    f"{CONFIG_PATH} must contain a YAML mapping, "
+                    f"got {type(config).__name__}"
+                )
             return config
     except yaml.YAMLError as e:
         logger.error("Failed to parse Hermes config: %s", e)

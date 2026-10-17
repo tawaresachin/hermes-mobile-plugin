@@ -151,7 +151,6 @@ async def _validate(request: web.Request) -> web.Response:
     except Exception:
         return _json_response({"ok": False, "error": "invalid JSON body"}, status=400)
     try:
-        import asyncio
         from hermes_cli.web_models import CustomEndpointUpdate
         ce = _router()
         models = body.get("models")

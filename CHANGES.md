@@ -1,5 +1,32 @@
 # Hermes Mobile QR Plugin
 
+## 0.0.29 — auth fails closed, seeder can't destroy config, dead code removed
+
+Three latent traps found in a follow-up audit of the plugin's trust
+boundaries:
+
+- **Voice/attach routes fail CLOSED when the API key can't be resolved.**
+  `_expected_key` swallowed a failed config read and returned the cached
+  value — `None` on a cold start — so every `@require_key` route ran
+  unauthenticated while the rest of the gateway still enforced its Bearer
+  key. An unresolved key now denies (401). A gateway that *verifiably* has
+  no key (adapter answers, config readable, no key set) still runs open,
+  matching api_server's own default-listener posture.
+- **`key_seeder` can no longer destroy a `config.yaml` it cannot read.** A
+  config that parsed to a non-mapping was treated as "absent", so the
+  installer replaced it with a key-only stub. The seeder now aborts and
+  reports, leaving the file (and `.env`) untouched.
+- **`load_hermes_config` raises `ConfigError` on a non-mapping config**
+  instead of returning a value that `AttributeError`s in every caller's
+  `.get()` — matching its documented contract.
+
+Cleanup: removed genuinely unreachable code — `startup_hook`,
+`IPDetectionError`, `_CTX_EST_CHARS_PER_TOKEN`, a write-only supervisor
+field, and an adapter `except` the host's `_expected_api_key` can never
+raise — plus unused imports/locals. `register(ctx)`/`create_plugin` are
+untouched (the former is the live host contract, the latter pinned by
+`tests/test_install.py` and `install.sh`). Three new tests pin the fixes.
+
 ## 0.0.28 — cross-platform compat: Windows venv detection, macOS liveness, working update-apply heal
 
 Three platform seams left the mobile API broken — or a watchdog over-eager —

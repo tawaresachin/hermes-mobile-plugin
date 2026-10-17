@@ -203,8 +203,6 @@ async def _context_window_route(request: web.Request) -> web.Response:
 # state.db (WAL, cheap) so it is accurate even after a server-side
 # compression rotated/compacted the transcript while the app was away.
 
-_CTX_EST_CHARS_PER_TOKEN = 4
-
 
 def _read_state_db_ro():
     import sqlite3

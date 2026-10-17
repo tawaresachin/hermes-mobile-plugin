@@ -237,7 +237,7 @@ def ensure_importable(venv: Path, package_source: str, module: str = "hermes_mob
         return False
     import subprocess
     try:
-        result = subprocess.run(
+        subprocess.run(
             [str(py), "-m", "pip", "install", "--quiet", package_source],
             capture_output=True,
             timeout=600,

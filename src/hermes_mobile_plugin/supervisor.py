@@ -6,14 +6,13 @@ Runs as a daemon process 24/7.
 
 import logging
 import os
-import shutil
 import socket
 import subprocess
 import sys
 import signal as signal_module
 import time
 from pathlib import Path
-from typing import Final, Optional
+from typing import Final
 
 from .constants import (
     DEFAULT_GATEWAY_PORT,
@@ -55,7 +54,6 @@ class GatewaySupervisor:
         """
         self.port = port
         self._running = False
-        self._pid: Optional[int] = None
         self._lock_handle = None
 
     def is_gateway_alive(self) -> bool:

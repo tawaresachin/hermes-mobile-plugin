@@ -62,6 +62,21 @@ def test_keyless_adapter_falls_back_to_config_chain():
         assert audio_routes._expected_key(None) is None
 
 
+def test_authorized_fails_closed_when_key_unresolved():
+    """A key that cannot be RESOLVED is not a keyless gateway. The old code
+    fell back to the cached value (None on a cold start), running every gated
+    route open whenever the config read raised; a read failure must deny."""
+    req = types.SimpleNamespace(app={}, headers={})
+    with patch.object(audio_routes, "_expected_key_cache", (-1e9, None)), \
+         patch("hermes_mobile_plugin.config.load_hermes_config",
+               side_effect=RuntimeError("boom")):
+        assert audio_routes._authorized(req) is False
+
+    # Contrast: a cache that resolves to "no key" is a keyless gateway — open.
+    with patch.object(audio_routes, "_expected_key_cache", (sys.float_info.max, None)):
+        assert audio_routes._authorized(req) is True
+
+
 def test_download_rejects_traversal():
     route = getattr(audio_routes._download_route, "__wrapped__", audio_routes._download_route)
     for bad in ("../etc", "a/../../b", ".."):

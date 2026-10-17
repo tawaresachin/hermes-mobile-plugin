@@ -166,6 +166,27 @@ class TestKeySeeder:
         # .bak still holds the ORIGINAL pre-seed content, not the re-seeded one
         assert yaml.safe_load(first_bak) == original
 
+    def test_unreadable_config_is_never_replaced_with_a_stub(self, tmp_path, monkeypatch):
+        """config.yaml that exists but is not a mapping must be left alone:
+        the old loader returned {} for it, and the key-only write destroyed
+        the user's whole file."""
+        from hermes_mobile_plugin import key_seeder
+
+        config_path = tmp_path / "config.yaml"
+        original = "- a top-level list, not a mapping\n"
+        config_path.write_text(original, encoding="utf-8")
+        monkeypatch.setattr(key_seeder, "CONFIG_PATH", config_path)
+        env_path = tmp_path / ".env"
+
+        report = key_seeder.seed_api_key(env_path=env_path)
+
+        assert report["key"] is None
+        assert report["seeded_config"] is False
+        assert report["seeded_env"] is False
+        assert config_path.read_text(encoding="utf-8") == original
+        assert not config_path.with_name("config.yaml.bak").exists()
+        assert not env_path.exists()
+
     def test_env_reader_ignores_comments_and_quotes(self, tmp_path):
         from hermes_mobile_plugin import key_seeder
 

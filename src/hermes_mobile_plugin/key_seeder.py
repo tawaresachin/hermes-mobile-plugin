@@ -76,16 +76,26 @@ def key_is_weak(key: str | None) -> bool:
     return not key or len(key) < MIN_KEY_LENGTH
 
 
-def _load_config_dict(config_path: Path) -> dict:
-    """config.yaml as a plain dict (never raises; {} when absent)."""
+def _load_config_dict(config_path: Path) -> dict | None:
+    """config.yaml as a plain dict, or None when it cannot be trusted.
+
+    {} means "absent" (safe to write a fresh file). None means the file
+    exists but is not a readable YAML mapping — the caller must NOT write,
+    or a key-only stub would destroy the user's config.
+    """
     try:
         import yaml
-        if yaml is None or not config_path.exists():
-            return {}
-        data = yaml.safe_load(config_path.read_text(encoding="utf-8"))
-        return data if isinstance(data, dict) else {}
-    except Exception:  # noqa: BLE001 - install must never die here
+    except ImportError:
+        return None
+    if not config_path.exists():
         return {}
+    try:
+        data = yaml.safe_load(config_path.read_text(encoding="utf-8"))
+    except Exception:  # noqa: BLE001 - install must never die here
+        return None
+    if data is None:
+        return {}
+    return data if isinstance(data, dict) else None
 
 
 def _save_config_dict(data: dict, config_path: Path) -> None:
@@ -193,6 +203,10 @@ def seed_api_key(
     has a strong key, it is COPIED to the other side (so the two can
     never disagree); only when neither side has one is a new key
     generated and written to both.
+
+    When ``config`` is None and config.yaml exists but cannot be read as
+    a YAML mapping, nothing is written: the report comes back unseeded
+    with ``key`` None, rather than replacing the file with a stub.
     """
     cfg_path = config_path or CONFIG_PATH
     if env_path is None:
@@ -201,6 +215,18 @@ def seed_api_key(
     cfg = config
     if cfg is None:
         cfg = _load_config_dict(cfg_path)
+        if cfg is None:
+            return {
+                "key": None,
+                "seeded_config": False,
+                "seeded_env": False,
+                "reasons": [
+                    (
+                        f"{cfg_path} exists but is not a readable YAML mapping; "
+                        "refusing to overwrite it (fix the file, then re-run)"
+                    )
+                ],
+            }
     cfg_key = existing_config_key(cfg)
     env_key = existing_env_key(env_path)
 

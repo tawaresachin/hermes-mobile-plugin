@@ -14,11 +14,6 @@ from .constants import (
 logger = logging.getLogger(__name__)
 
 
-class IPDetectionError(Exception):
-    """Raised when IP detection fails."""
-    pass
-
-
 def _run_command(cmd: list[str], timeout: int = 2) -> Optional[str]:
     """Run a shell command and return stdout.
 

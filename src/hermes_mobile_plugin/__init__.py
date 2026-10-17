@@ -22,7 +22,7 @@ import asyncio
 import logging
 import threading
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any
 
 from .constants import PLUGIN_VERSION
 
@@ -145,7 +145,8 @@ async def _maybe_generate_qr(ctx: Any) -> None:
         from .config import load_hermes_config, get_plugin_config
         hermes_config = load_hermes_config()
         plugin_config = get_plugin_config(hermes_config)
-    except ImportError:
+    except Exception as exc:  # noqa: BLE001 — a bad/unimportable config must not 500 startup
+        logger.warning("[Hermes Mobile QR] config unreadable, QR skipped: %s", exc)
         hermes_config, plugin_config = {}, {}
 
     if not plugin_config.get("auto_generate", True):
@@ -207,9 +208,3 @@ def register(ctx: Any) -> None:
 def create_plugin(config: dict, plugin_dir: Path) -> HermesMobileQRPlugin:
     """Factory function called by the legacy Hermes plugin loader."""
     return HermesMobileQRPlugin(config, plugin_dir)
-
-
-async def startup_hook(config: dict, plugin_dir: Path) -> None:
-    """Standalone startup hook if Hermes loader expects a function."""
-    plugin = create_plugin(config, plugin_dir)
-    await plugin.startup()

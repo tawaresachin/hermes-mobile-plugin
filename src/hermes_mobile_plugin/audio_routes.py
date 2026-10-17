@@ -67,26 +67,19 @@ def _expected_key(app: Optional[Any] = None) -> Optional[str]:
     if app is not None:
         adapter = app.get("api_server_adapter")
         if adapter is not None:
-            try:
-                return adapter._expected_api_key() or None
-            except Exception as exc:  # noqa: BLE001 — fall through to config
-                logger.warning("hermes-mobile-qr: adapter key unavailable: %s", exc)
+            return adapter._expected_api_key() or None
     global _expected_key_cache
     now = time.monotonic()
     stamp, value = _expected_key_cache
     if now - stamp < _KEY_CACHE_TTL_SECONDS:
         return value
-    key: Optional[str] = None
-    try:
-        from .config import load_hermes_config
-        cfg = load_hermes_config()
-        key = (
-            cfg.get("platforms", {}).get("api_server", {}).get("extra", {}).get("key")
-            or None
-        )
-    except Exception as exc:  # noqa: BLE001 — config read must never 500 a route
-        logger.warning("hermes-mobile-qr: could not read api_server key: %s", exc)
-        return value  # keep the previous cached value for one more cycle
+    from .config import load_hermes_config
+
+    cfg = load_hermes_config()
+    key: Optional[str] = (
+        cfg.get("platforms", {}).get("api_server", {}).get("extra", {}).get("key")
+        or None
+    )
     if not key:
         # api_server resolves its own key as extra.key OR $API_SERVER_KEY
         # (gateway/platforms/api_server.py). Without this fallback a
@@ -98,11 +91,20 @@ def _expected_key(app: Optional[Any] = None) -> Optional[str]:
 
 
 def _authorized(request: web.Request) -> bool:
-    """True when the request carries the gateway Bearer key (or the server has no key)."""
-    expected = _expected_key(request.app)
+    """True when the request carries the gateway Bearer key, or when the
+    gateway verifiably has no key.
+
+    A key that cannot be RESOLVED is not a keyless gateway — fail closed.
+    """
+    try:
+        expected = _expected_key(request.app)
+    except Exception as exc:  # noqa: BLE001 — an unresolved key must never mean "open"
+        logger.warning("hermes-mobile-qr: API key unresolved; refusing request: %s", exc)
+        return False
     if not expected:
-        # No platform key configured: api_server itself runs keyless, so these
-        # routes match its posture rather than inventing a second auth scheme.
+        # Resolved and empty: api_server itself runs keyless on the default
+        # listener, so these routes match its posture rather than inventing
+        # a second auth scheme.
         return True
     header = request.headers.get("Authorization", "")
     if header.startswith("Bearer "):
@@ -238,7 +240,7 @@ async def _transcribe_route(request: web.Request) -> web.Response:
         )
     except AudioBackendError as exc:
         return _json_response({"ok": False, "error": str(exc)}, status=exc.status)
-    except Exception as exc:
+    except Exception:
         logger.exception("Unexpected error in /api/audio/transcribe")
         return _json_response(
             {"ok": False, "error": "Internal error (see server log)"}, status=500
@@ -273,7 +275,7 @@ async def _speak_route(request: web.Request) -> web.Response:
         )
     except AudioBackendError as exc:
         return _json_response({"ok": False, "error": str(exc)}, status=exc.status)
-    except Exception as exc:
+    except Exception:
         logger.exception("Unexpected error in /api/audio/speak")
         return _json_response(
             {"ok": False, "error": "Internal error (see server log)"}, status=500

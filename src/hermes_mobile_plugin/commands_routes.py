@@ -27,7 +27,7 @@ from __future__ import annotations
 import logging
 import asyncio
 import time
-from typing import Any, Optional
+from typing import Optional
 
 from aiohttp import web
 

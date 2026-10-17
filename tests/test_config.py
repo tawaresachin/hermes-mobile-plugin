@@ -69,6 +69,16 @@ class TestLoadHermesConfig:
             
         assert result == {}
 
+    def test_non_mapping_yaml_raises(self, tmp_path):
+        """A top-level list/scalar is not a config: raise ConfigError instead
+        of returning a value that AttributeErrors in every caller's .get()."""
+        config_file = tmp_path / "config.yaml"
+        config_file.write_text("- not\n- a\n- mapping\n")
+
+        with patch('hermes_mobile_plugin.config.CONFIG_PATH', config_file):
+            with pytest.raises(ConfigError):
+                load_hermes_config()
+
 
 class TestValidateConfig:
     """Tests for validate_config function."""
