@@ -161,6 +161,6 @@ def register(native_app: web.Application) -> None:
     native_app.router.add_get("/api/mobile/commands", _commands_route)
     native_app.router.add_post("/api/mobile/command/resolve", _command_resolve_route)
     logger.info(
-        "[hermes-mobile-qr] command routes registered: "
+        "[hermes-mobile-plugin] command routes registered: "
         "GET /api/mobile/commands, POST /api/mobile/command/resolve"
     )

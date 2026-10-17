@@ -7,7 +7,7 @@ try:
 except ImportError:
     yaml = None
 
-from .constants import CONFIG_PATH
+from .constants import CONFIG_PATH, LEGACY_PLUGIN_NAME, PLUGIN_NAME
 
 logger = logging.getLogger(__name__)
 
@@ -99,7 +99,8 @@ def get_plugin_config(config: dict) -> dict:
     Returns:
         Plugin configuration dictionary with defaults.
     """
-    return config.get("plugins", {}).get("hermes-mobile-qr", {
-        "auto_generate": True,
-        "auto_start_supervisor": True,
-    })
+    plugins = config.get("plugins", {})
+    # The plugin was renamed in 0.0.34; the old section still applies so a
+    # config written before the rename keeps its settings.
+    return (plugins.get(PLUGIN_NAME) or plugins.get(LEGACY_PLUGIN_NAME)
+            or {"auto_generate": True, "auto_start_supervisor": True})

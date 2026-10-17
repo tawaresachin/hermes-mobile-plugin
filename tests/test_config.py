@@ -163,7 +163,7 @@ class TestGetPluginConfig:
         """Test getting custom plugin configuration."""
         config = {
             "plugins": {
-                "hermes-mobile-qr": {
+                "hermes-mobile-plugin": {
                     "auto_generate": False,
                     "auto_start_supervisor": False
                 }
@@ -173,3 +173,10 @@ class TestGetPluginConfig:
         
         assert result["auto_generate"] is False
         assert result["auto_start_supervisor"] is False
+
+    def test_pre_rename_section_still_applies(self):
+        """A plugins.hermes-mobile-qr: block written before the 0.0.34 rename
+        keeps applying."""
+        config = {"plugins": {"hermes-mobile-qr": {"auto_generate": False}}}
+
+        assert get_plugin_config(config)["auto_generate"] is False

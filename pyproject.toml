@@ -4,8 +4,8 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "hermes-mobile-plugin"
-version = "0.0.33"
-description = "Hermes Mobile QR Plugin - Generates QR code for direct 8642 connection"
+version = "0.0.34"
+description = "QR pairing and voice for the Hermes Mobile app"
 readme = "README.md"
 requires-python = ">=3.10"
 license = {text = "MIT"}

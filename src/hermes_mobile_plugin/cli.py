@@ -26,9 +26,11 @@ from pathlib import Path
 
 from .config import load_hermes_config, validate_config
 from .constants import (
+    LEGACY_PLUGIN_NAME,
     PLUGIN_DIR,
     PLUGIN_NAME,
     PLUGIN_VERSION,
+    PLUGINS_DIR,
     SUPERVISOR_CHECK_INTERVAL,
     SUPERVISOR_FAILURE_THRESHOLD,
     find_hermes_cli,
@@ -94,6 +96,11 @@ def cmd_install(args: argparse.Namespace) -> int:
     # Step 3: Deploy plugin files into Hermes' plugins directory (the same
     # deployment the .bat/.sh installers and hermes-mobile-install use).
     print("📦 Step 3/6: Deploying plugin files...")
+    try:
+        if remove_legacy_install():
+            print(f"   🧹 removed the pre-0.0.34 install ({LEGACY_PLUGIN_NAME})")
+    except Exception as e:  # noqa: BLE001 - migration must never fail the install
+        print(f"   ⚠️  Could not remove the old install: {e}")
     try:
         copied = deploy_plugin_files(PLUGIN_DIR)
         for path in copied:
@@ -179,7 +186,7 @@ def cmd_install(args: argparse.Namespace) -> int:
     print()
 
     restarted = False
-    if gw_running and health_before and not changed:
+    if gw_running and health_before and not (config_changed or venv_upgraded):
         # Nothing this run wrote: the running gateway is already the truth.
         print(f"🔄 Gateway is healthy (port {port}) and nothing changed — "
               "no restart needed.")
@@ -448,6 +455,32 @@ def enable_plugin() -> tuple[bool, str]:
     return True, "enabled"
 
 
+def remove_legacy_install() -> bool:
+    """Remove the pre-0.0.34 install (deploy dir + Hermes registry entry).
+
+    Hermes keys a directory plugin by its manifest ``name``, so the old
+    ``plugins/hermes-mobile-qr`` directory would keep registering a SECOND
+    plugin whose ``/api/*`` routes collide with this one. Returns True when
+    a legacy install was found and removed. Never raises.
+    """
+    legacy_dir = PLUGINS_DIR / LEGACY_PLUGIN_NAME
+    if not legacy_dir.is_dir():
+        return False
+    try:
+        hermes = find_hermes_cli()
+        if hermes:
+            # Hermes' own CLI drops the directory and its registry entry.
+            subprocess.run(
+                [hermes, "plugins", "uninstall", LEGACY_PLUGIN_NAME],
+                capture_output=True, text=True, timeout=120,
+            )
+    except (OSError, subprocess.SubprocessError):
+        pass
+    if legacy_dir.is_dir():  # no launcher (or it refused): drop it here
+        shutil.rmtree(legacy_dir, ignore_errors=True)
+    return True
+
+
 def deploy_plugin_files(target_dir: Path) -> list[Path]:
     """Copy the plugin into Hermes' plugins directory.
 
@@ -549,7 +582,7 @@ def install_plugin(args: "argparse.Namespace | None" = None) -> int:
         "--target",
         default=None,
         help="Override the target directory "
-             "(default: ~/.hermes/plugins/hermes-mobile-qr)",
+             "(default: ~/.hermes/plugins/hermes-mobile-plugin)",
     )
     ns = parser.parse_args() if args is None else args
 

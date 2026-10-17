@@ -31,6 +31,24 @@ jobs:
       - name: Run test suite
         run: python -m pytest tests/ -q
 
+  lint:
+    # A NameError only bites on the path that reaches it. 0.0.33 shipped
+    # `NameError: changed` in cmd_install's restart decision — every install
+    # with a healthy gateway already running died at the last step, and no
+    # test covered that path. Undefined names are cheap to check, so they are
+    # checked here rather than trusting the test matrix to walk every branch.
+    name: undefined names
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: ruff (F821 undefined name)
+        run: |
+          python -m pip install -q ruff
+          ruff check --select F821 src/ tests/
+
   install-sh:
     # Sandboxed END-TO-END dry-run of the POSIX installer on real Linux and
     # macOS: fake `hermes` shim with a shebang, fake hermes_constants, fake
@@ -77,10 +95,10 @@ jobs:
       - name: Confirm deps + QR actually landed in the venv
         run: |
           "$SANDBOX/venv/bin/python3" -c "import yaml, qrcode; print('deps importable from owning venv')"
-          test -f "$FAKE_HH/plugins/hermes-mobile-qr/qr_code.html"
+          test -f "$FAKE_HH/plugins/hermes-mobile-plugin/qr_code.html"
       - name: Verify deployed layout
         run: |
-          P="$FAKE_HH/plugins/hermes-mobile-qr"
+          P="$FAKE_HH/plugins/hermes-mobile-plugin"
           test -f "$P/plugin.yaml"
           test -f "$P/hermes_mobile_plugin/cli.py"
           test -f "$P/__init__.py"
@@ -121,7 +139,7 @@ jobs:
           grep -q "Installation complete" termux-run.log
       - name: Verify deployed layout despite skipped pip
         run: |
-          P="$FAKE_HH/plugins/hermes-mobile-qr"
+          P="$FAKE_HH/plugins/hermes-mobile-plugin"
           test -f "$P/plugin.yaml"
           test -f "$P/hermes_mobile_plugin/cli.py"
           test -f "$P/qr_code.html"
@@ -190,7 +208,7 @@ jobs:
       - name: Verify deployed layout
         shell: pwsh
         run: |
-          $p = "$env:FAKE_HH\plugins\hermes-mobile-qr"
+          $p = "$env:FAKE_HH\plugins\hermes-mobile-plugin"
           foreach ($f in "plugin.yaml", "hermes_mobile_plugin\cli.py", "__init__.py", "qr_code.html") {
             if (-not (Test-Path "$p\$f")) { Write-Error "::error::missing $p\$f"; exit 1 }
           }

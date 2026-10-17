@@ -5,8 +5,14 @@ import os
 from pathlib import Path
 from typing import Final
 
-# Plugin metadata
-PLUGIN_NAME: Final[str] = "hermes-mobile-qr"
+# Plugin metadata. Keep this equal to ``name:`` in plugin.yaml: the loader
+# keys the plugin (and `hermes plugins enable <name>`) off the manifest name,
+# and PLUGIN_DIR is derived from it.
+PLUGIN_NAME: Final[str] = "hermes-mobile-plugin"
+# The name this plugin shipped under before 0.0.34. Its deployed directory
+# (and registry entry) must be removed on install or Hermes discovers two
+# plugins that both register the same /api/* routes.
+LEGACY_PLUGIN_NAME: Final[str] = "hermes-mobile-qr"
 
 
 def _read_plugin_version() -> str:

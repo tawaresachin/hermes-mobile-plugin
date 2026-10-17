@@ -1,16 +1,8 @@
-name: hermes-mobile-qr
-version: "0.0.33"
+name: hermes-mobile-plugin
+version: "0.0.34"
 description: |
-  Hermes Mobile QR + Voice plugin. Generates a QR code for the Hermes Mobile
-  App to connect directly to the Hermes Agent Desktop gateway (port 8642),
-  and exposes STT/TTS/attachment routes on the gateway so the mobile app can
-  speak, listen, and send files without an extra service.
-
-  Audio routes (POST /api/audio/transcribe, /speak, /upload;
-  GET /api/audio/health, /api/audio/download/{sid}/{name}) are mounted on the
-  api_server platform via the standard register(ctx) handler mechanism. They
-  reuse hermes-agent's existing Whisper STT and TTS provider chain — no new
-  providers are bundled.
+  QR pairing and voice for the Hermes Mobile app: seeds the gateway API key,
+  allows phone access and adds the STT/TTS/attachment routes.
 
 author: Sachin Taware
 license: MIT

@@ -27,10 +27,25 @@ def test_broken_venv_heals_best_effort_never_fails(tmp_path, monkeypatch):
     (venv / "bin").mkdir(parents=True)
     (venv / "bin" / "python").write_text("#!/bin/sh\nexit 127\n")
     (venv / "bin" / "python").chmod(0o755)
-    (tmp_path / "plugins" / "hermes-mobile-qr").mkdir(parents=True)
+    (tmp_path / "plugins" / "hermes-mobile-plugin").mkdir(parents=True)
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
     rc = heal_runtime_venv.heal()
     assert rc == 0  # best-effort: the update chain must proceed regardless
+
+
+def test_pth_write_drops_the_pre_rename_pointer(tmp_path, monkeypatch):
+    # 0.0.34 renamed the plugin; a leftover hermes-mobile-qr.pth would keep
+    # the venv importing whatever sits at the old deploy dir.
+    sp = tmp_path / "site-packages"
+    sp.mkdir()
+    (sp / "hermes-mobile-qr.pth").write_text("/old/deploy\n", encoding="utf-8")
+    monkeypatch.setattr(heal_runtime_venv, "_venv_site_packages", lambda v: sp)
+
+    pth = heal_runtime_venv._write_pth(tmp_path / "venv", tmp_path / "deploy")
+
+    assert pth is not None and pth.name == "hermes-mobile-plugin.pth"
+    assert pth.read_text(encoding="utf-8").strip() == str(tmp_path / "deploy")
+    assert not (sp / "hermes-mobile-qr.pth").exists()
 
 
 def test_heal_step_argv_actually_runs_the_script(monkeypatch):

@@ -7,8 +7,10 @@ toolchain ``pip install`` never reached) plus the two user-facing
 consequences: pairing without a key, and the supervisor silently watching
 the default port on a host that moved it.
 """
+import argparse
 import json
 import os
+import re
 import stat
 import subprocess
 import sys
@@ -296,7 +298,7 @@ class TestRuntimeVenvDetection:
         monkeypatch.setattr(envdetect, "HERMES_HOME", tmp_path)
         installs = tmp_path / "installs"
         _make_venv(installs / "x" / "environments" / "1")
-        plugins_venv = _make_venv(tmp_path / "plugins" / "hermes-mobile-qr" / "venv")
+        plugins_venv = _make_venv(tmp_path / "plugins" / "hermes-mobile-plugin" / "venv")
         monkeypatch.setattr(envdetect, "INSTALLS_DIR", installs)
         found = envdetect.find_runtime_venv()
         assert found is not None
@@ -340,7 +342,7 @@ class TestRuntimeVenvDetection:
         # The "deployed" plugin as deploy_plugin_files leaves it: a plain
         # package dir (no pyproject) exposing the version the probe reads.
         home = tmp_path / "home"
-        deployed = home / "plugins" / "hermes-mobile-qr" / "hermes_mobile_plugin"
+        deployed = home / "plugins" / "hermes-mobile-plugin" / "hermes_mobile_plugin"
         deployed.mkdir(parents=True)
         (deployed / "__init__.py").write_text("", encoding="utf-8")
         (deployed / "constants.py").write_text(
@@ -363,7 +365,7 @@ class TestRuntimeVenvDetection:
         from hermes_mobile_plugin import heal_runtime_venv
 
         home = tmp_path / "home"
-        (home / "plugins" / "hermes-mobile-qr").mkdir(parents=True)
+        (home / "plugins" / "hermes-mobile-plugin").mkdir(parents=True)
         fake_python = tmp_path / "venv" / "bin" / "python"
         fake_python.parent.mkdir(parents=True)
         fake_python.write_text("#!/bin/sh\nexit 1\n", encoding="utf-8")
@@ -498,3 +500,141 @@ def test_enable_plugin_never_raises(monkeypatch):
 
     monkeypatch.setattr(cli.subprocess, "run", explode)
     assert cli.enable_plugin()[0] is False
+
+
+# ---------------------------------------------------------------------------
+# Feature 6: plugin naming, the pre-0.0.34 migration, and the restart decision
+# ---------------------------------------------------------------------------
+
+class TestPluginNaming:
+    """The manifest ``name`` is the registry key (`hermes plugins list`,
+    enable/disable) AND the directory Hermes scans for the plugin, and the
+    pip distribution + console script carry the same string. 0.0.34 renamed
+    it from hermes-mobile-qr, so everything must move together."""
+
+    def test_manifest_distribution_and_deploy_dir_agree(self):
+        from hermes_mobile_plugin.constants import PLUGIN_DIR, PLUGIN_NAME
+
+        root = Path(__file__).resolve().parent.parent
+        manifest = yaml.safe_load((root / "plugin.yaml").read_text(encoding="utf-8"))
+        bundled = yaml.safe_load(
+            (root / "src" / "hermes_mobile_plugin" / "plugin.yaml").read_text(encoding="utf-8"))
+        pyproject = (root / "pyproject.toml").read_text(encoding="utf-8")
+
+        assert PLUGIN_NAME == "hermes-mobile-plugin"
+        assert manifest["name"] == PLUGIN_NAME
+        assert bundled["name"] == PLUGIN_NAME
+        assert re.search(rf'^name = "{re.escape(PLUGIN_NAME)}"', pyproject, re.M), \
+            "pyproject [project].name diverges from the manifest"
+        assert re.search(rf'^{re.escape(PLUGIN_NAME)} = "', pyproject, re.M), \
+            "no console script named after the plugin"
+        assert PLUGIN_DIR.name == PLUGIN_NAME
+
+    def test_description_is_one_short_block(self):
+        """It is rendered in `hermes plugins list`: keep it concise."""
+        root = Path(__file__).resolve().parent.parent
+        manifest = yaml.safe_load((root / "plugin.yaml").read_text(encoding="utf-8"))
+        description = manifest["description"].strip()
+
+        assert "\n\n" not in description  # one paragraph, not an essay
+        assert len(" ".join(description.split())) <= 160
+
+
+class TestLegacyInstallMigration:
+    """0.0.34 renamed the plugin. Hermes keys a directory plugin by its
+    manifest name, so a surviving plugins/hermes-mobile-qr registers a SECOND
+    plugin whose /api/* routes collide with this one."""
+
+    def test_removes_the_pre_rename_directory(self, tmp_path, monkeypatch):
+        from hermes_mobile_plugin import cli
+
+        legacy = tmp_path / "plugins" / "hermes-mobile-qr"
+        legacy.mkdir(parents=True)
+        (legacy / "plugin.yaml").write_text("name: hermes-mobile-qr\n", encoding="utf-8")
+        monkeypatch.setattr(cli, "PLUGINS_DIR", tmp_path / "plugins")
+        monkeypatch.setattr(cli, "find_hermes_cli", lambda: None)  # rmtree fallback
+
+        assert cli.remove_legacy_install() is True
+        assert not legacy.exists()
+
+    def test_prefers_hermes_own_uninstall(self, tmp_path, monkeypatch):
+        from hermes_mobile_plugin import cli, constants
+
+        (tmp_path / "plugins" / "hermes-mobile-qr").mkdir(parents=True)
+        monkeypatch.setattr(cli, "PLUGINS_DIR", tmp_path / "plugins")
+        monkeypatch.setattr(cli, "find_hermes_cli", lambda: "/usr/bin/hermes")
+        calls = []
+
+        def fake_run(argv, **kw):
+            calls.append((argv, kw))
+            return subprocess.CompletedProcess(argv, 0, stdout="removed", stderr="")
+
+        monkeypatch.setattr(cli.subprocess, "run", fake_run)
+
+        assert cli.remove_legacy_install() is True
+        argv, kw = calls[0]
+        assert argv == ["/usr/bin/hermes", "plugins", "uninstall",
+                        constants.LEGACY_PLUGIN_NAME]
+        assert "shell" not in kw  # Windows-safe list form
+
+    def test_without_a_legacy_install_it_is_a_noop(self, tmp_path, monkeypatch):
+        from hermes_mobile_plugin import cli
+
+        monkeypatch.setattr(cli, "PLUGINS_DIR", tmp_path / "plugins")
+
+        assert cli.remove_legacy_install() is False
+
+
+class TestInstallRestart:
+    """cmd_install's post-install step: a RUNNING gateway is restarted only
+    when this run changed something. No test used to call cmd_install at all,
+    which is how a NameError (`changed`) shipped to users."""
+
+    @staticmethod
+    def _patch(monkeypatch, *, seeded):
+        from hermes_mobile_plugin import cli, envdetect
+
+        killed = []
+
+        async def fake_qr(*args, **kwargs):
+            return "qr.html"
+
+        monkeypatch.setattr(cli, "load_hermes_config", lambda: {})
+        monkeypatch.setattr(cli, "validate_config", lambda config: [])
+        monkeypatch.setattr(cli, "seed_api_key", lambda config: {
+            "seeded_config": seeded, "seeded_env": False, "key": "k" * 32})
+        monkeypatch.setattr(cli, "print_seed_report", lambda report: None)
+        monkeypatch.setattr(cli, "remove_legacy_install", lambda: False)
+        monkeypatch.setattr(cli, "deploy_plugin_files", lambda target: [])
+        monkeypatch.setattr(envdetect, "find_runtime_venv", lambda: None)
+        monkeypatch.setattr(envdetect, "venv_module_version", lambda venv: None)
+        monkeypatch.setattr(envdetect, "ensure_runtime_venv", lambda: "   ok")
+        monkeypatch.setattr(cli, "enable_plugin", lambda: (True, "enabled"))
+        monkeypatch.setattr(cli, "generate_qr", fake_qr)
+        monkeypatch.setattr(cli, "print_connection_details", lambda config: None)
+        monkeypatch.setattr(cli, "resolve_gateway_port", lambda: 8642)
+        monkeypatch.setattr(cli, "_gateway_health", lambda port: True)
+        monkeypatch.setattr(cli, "gateway_pid", lambda: 4242)
+        monkeypatch.setattr(cli, "_pid_alive", lambda pid: True)
+        monkeypatch.setattr(cli, "is_supervisor_running", lambda: True)
+        monkeypatch.setattr(cli, "read_supervisor_pid", lambda: 99)
+        monkeypatch.setattr(cli, "terminate_pid", killed.append)
+        monkeypatch.setattr(cli, "_wait_for_health", lambda port, timeout_s: True)
+        return killed
+
+    def test_unchanged_run_leaves_a_healthy_gateway_running(self, monkeypatch, capsys):
+        from hermes_mobile_plugin import cli
+
+        killed = self._patch(monkeypatch, seeded=False)
+
+        assert cli.cmd_install(argparse.Namespace()) == 0
+        assert killed == []
+        assert "no restart needed" in capsys.readouterr().out
+
+    def test_changed_run_restarts_the_gateway(self, monkeypatch, capsys):
+        from hermes_mobile_plugin import cli
+
+        killed = self._patch(monkeypatch, seeded=True)
+
+        assert cli.cmd_install(argparse.Namespace()) == 0
+        assert killed == [4242]

@@ -438,7 +438,7 @@ def register(native_app: web.Application) -> None:
     native_app.router.add_get("/api/mobile/context-usage", _context_usage_route)
     native_app.router.add_get("/api/mobile/file", _serve_file_route)
     logger.info(
-        "[hermes-mobile-qr v%s] system routes registered: GET /api/system/status, "
+        "[hermes-mobile-plugin v%s] system routes registered: GET /api/system/status, "
         "POST /api/system/awake, POST /api/diag/log, "
         "GET /api/mobile/context-window, GET /api/mobile/context-usage, "
         "GET /api/mobile/file",

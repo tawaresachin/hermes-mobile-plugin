@@ -1,5 +1,34 @@
 # Hermes Mobile QR Plugin
 
+## 0.0.34 — the install that crashed at the finish line; plugin renamed
+
+0.0.33 shipped a defect at the very end of `install` and mixed two names for
+one plugin:
+
+- **`changed` was never defined** in the post-install restart decision, so
+  every install against a running, healthy gateway died with a `NameError`
+  *after* all six steps had printed success. Worse than the traceback: the
+  gateway was never restarted, so the new key/host/plugin version never
+  reached it — the exact failure 0.0.33 set out to fix. The condition now
+  reads the signals it already computed (`config_changed or venv_upgraded`).
+- **The plugin is called `hermes-mobile-plugin` everywhere now.** It used to
+  appear as `hermes-mobile-qr` in `hermes plugins list` and
+  `hermes plugins show` while the pip distribution and console script were
+  already `hermes-mobile-plugin`. The deploy directory follows. Installing
+  over an older version removes the old `plugins/hermes-mobile-qr` in the
+  same step — Hermes keys a directory plugin by its manifest name, so a
+  surviving copy would register a *second* plugin whose `/api/*` routes
+  collide — and the stale `.pth` in the runtime venv goes with it.
+- **A concise description**, since it is rendered in `hermes plugins list`
+  (it was a four-paragraph essay with the port and every route enumerated).
+- A `plugins: hermes-mobile-qr:` config section written before the rename
+  still applies.
+
+Housekeeping: installs are now covered by tests. `cmd_install` had none,
+which is how the `NameError` reached a user; the restart decision is pinned
+both ways, and CI fails on undefined names (`ruff --select F821`) so this
+class of bug cannot ship again.
+
 ## 0.0.33 — install now finishes the job: enables, seeds and heals for real
 
 Four defects found installing 0.0.32 on a live macOS host, all reproduced:

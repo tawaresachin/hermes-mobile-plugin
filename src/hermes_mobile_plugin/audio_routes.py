@@ -99,7 +99,7 @@ def _authorized(request: web.Request) -> bool:
     try:
         expected = _expected_key(request.app)
     except Exception as exc:  # noqa: BLE001 — an unresolved key must never mean "open"
-        logger.warning("hermes-mobile-qr: API key unresolved; refusing request: %s", exc)
+        logger.warning("hermes-mobile-plugin: API key unresolved; refusing request: %s", exc)
         return False
     if not expected:
         # Resolved and empty: api_server itself runs keyless on the default
@@ -496,7 +496,7 @@ def register(native_app: web.Application) -> None:
     native_app.router.add_get("/api/audio/download/{session_id}/{filename}", _download_route)
     native_app.router.add_delete("/api/audio/files/{session_id}/{filename}", _delete_route)
     logger.info(
-        "[hermes-mobile-qr v%s] Audio routes registered: "
+        "[hermes-mobile-plugin v%s] Audio routes registered: "
         "POST /api/audio/transcribe, POST /api/audio/speak, GET /api/audio/health, "
         "POST /api/audio/upload, GET /api/audio/download/{sid}/{name}, "
         "DELETE /api/audio/files/{sid}/{name}",

@@ -72,7 +72,7 @@ REM has the backslash OUTSIDE the quotes — the old line had it inside
 REM ("%%PLUGIN_DIR\"), which never expanded and left the path unquoted.
 echo.
 echo 🔧 Installing plugin to Hermes...
-set "PLUGIN_DIR=%HERMES_HOME_DIR%\plugins\hermes-mobile-qr"
+set "PLUGIN_DIR=%HERMES_HOME_DIR%\plugins\hermes-mobile-plugin"
 if not exist "%PLUGIN_DIR%" mkdir "%PLUGIN_DIR%"
 
 REM Copy plugin files

@@ -116,7 +116,7 @@ fi
 # Install plugin files to Hermes plugins directory
 echo ""
 echo "🔧 Installing plugin to Hermes..."
-PLUGIN_DIR="$HERMES_HOME_DIR/plugins/hermes-mobile-qr"
+PLUGIN_DIR="$HERMES_HOME_DIR/plugins/hermes-mobile-plugin"
 mkdir -p "$PLUGIN_DIR"
 
 # Copy plugin files. NOTE the trailing "/.": a plain `cp -r src dest` NESTS

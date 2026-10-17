@@ -23,7 +23,7 @@ def test_install_plugin_entry_point_is_importable():
 
 
 def test_deploy_produces_loader_compatible_layout(tmp_path):
-    target = tmp_path / "hermes-mobile-qr"
+    target = tmp_path / "hermes-mobile-plugin"
     copied = cli.deploy_plugin_files(target)
 
     names = {p.name for p in copied}
@@ -60,7 +60,7 @@ def test_deploy_produces_loader_compatible_layout(tmp_path):
 def test_deploy_is_idempotent(tmp_path):
     """Re-install/upgrade must REPLACE the package, not nest a stale copy
     inside itself (the cp -r bug install.sh shipped for releases)."""
-    target = tmp_path / "hermes-mobile-qr"
+    target = tmp_path / "hermes-mobile-plugin"
     cli.deploy_plugin_files(target)
     stale = target / "hermes_mobile_plugin" / "stale_module.py"
     stale.write_text("# gone after redeploy\n", encoding="utf-8")

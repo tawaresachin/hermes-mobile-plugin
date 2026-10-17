@@ -44,7 +44,10 @@ _PLUGIN_DEPS = ("pyyaml>=6.0", "qrcode>=7.4", "aiohttp>=3.8")
 # The modules a healthy gateway must be able to import: the plugin package +
 # its third-party deps. yaml (not pyyaml) and aiohttp are the import names.
 _PROBE_MODULES = ("hermes_mobile_plugin", "qrcode", "yaml", "aiohttp")
-PLUGIN_SLUG = "hermes-mobile-qr"
+# Deploy-dir / .pth slug — the manifest name (heal is stdlib-only, so it
+# cannot import constants.PLUGIN_NAME).
+PLUGIN_SLUG = "hermes-mobile-plugin"
+LEGACY_PLUGIN_SLUG = "hermes-mobile-qr"
 # The pip DISTRIBUTION name (pyproject [project].name) — what pip uninstall
 # needs to drop a stale copy of the plugin out of the venv.
 _PLUGIN_DIST = "hermes-mobile-plugin"
@@ -156,6 +159,9 @@ def _write_pth(venv: Path, target_dir: Path) -> Path | None:
         return None
     pth = sp / f"{PLUGIN_SLUG}.pth"
     pth.write_text(f"{target_dir}\n", encoding="utf-8")
+    # Pre-0.0.34 pointer to the old deploy dir: left behind it makes the venv
+    # import whatever is still there under the old plugin's name.
+    (sp / f"{LEGACY_PLUGIN_SLUG}.pth").unlink(missing_ok=True)
     return pth
 
 
