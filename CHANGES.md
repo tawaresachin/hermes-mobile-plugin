@@ -1,5 +1,33 @@
 # Hermes Mobile QR Plugin
 
+## 0.0.33 — install now finishes the job: enables, seeds and heals for real
+
+Four defects found installing 0.0.32 on a live macOS host, all reproduced:
+
+- **The documented install never enabled the plugin.** A deployed directory
+  plugin is inert until `hermes plugins enable`, so `cmd_install` printed
+  success while every `/api/mobile/*` route 404'd. It now enables the plugin
+  through Hermes' own CLI (argv list, no shell) and prints the command if the
+  launcher cannot be found.
+- **The QR advertised the LAN address while the gateway bound 127.0.0.1.**
+  `key_seeder` now seeds `platforms.api_server.extra.host: 0.0.0.0` in the
+  same write as the key — and never overrides a host the user set.
+- **A newer plugin never reached the gateway.** The runtime venv's older
+  pip-installed copy shadowed the deployed dir (site-packages beats `.pth`)
+  and the heal's early exit was version-blind, so 0.0.28 kept being served
+  after a 0.0.32 install. `ensure_runtime_venv` is now version-aware, delegates
+  the repair to `heal(venv, expected_version=...)`, and the heal uninstalls any
+  pip-installed copy before writing the `.pth` (which also fixes wheel installs).
+- **A running gateway was left on the old code.** It is now restarted when this
+  run changed something (key, host or plugin version) and left alone when it
+  changed nothing.
+
+Cross-platform: `ipconfig` is now in the interface list with a token-based
+`100.x` parser (Windows has no `ifconfig`, and the socket fallback returns the
+LAN address), and `install.sh` finds a Git Bash venv's `python.exe`. Dead
+helpers removed: `ensure_importable`, `bootstrap_pip`, `venv_has_pip`,
+`venv_has_module`, `same_interpreter_as_caller`, `_package_source_path`.
+
 ## 0.0.32 — dead test imports removed; first release through the rebuilt pipeline
 
 Housekeeping only — no product code touched:
