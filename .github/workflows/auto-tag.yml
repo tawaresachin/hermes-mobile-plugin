@@ -18,6 +18,9 @@ on:
 
 permissions:
   contents: write
+  # Dispatching pypi.yml needs actions:write; GITHUB_TOKEN-created release
+  # events do not start workflows, so the release cannot rely on them.
+  actions: write
 
 jobs:
   tag:
@@ -102,18 +105,12 @@ jobs:
           gh release upload "$TAG" dist/*.whl dist/*.tar.gz dist/SHA256SUMS
           gh release edit "$TAG" --draft=false --latest
           gh release view "$TAG" --json assets --jq '[.assets[].name]'
-      - name: Trigger PyPI publish
-        # GITHUB_TOKEN-created release events do not start workflows, but
-        # workflow_dispatch events do. pypi.yml publishes from the tag ref.
-        if: steps.prep.outputs.created == 'true'
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: gh workflow run pypi.yml --ref "${{ steps.prep.outputs.tag }}"
       - name: Sync README install pin to the new tag
-        # The README documents install with a pinned @vX.Y.Z ref; without
-        # this step it silently drifts one release behind on every tag.
-        # Push it back to main so the docs always point at the newest
-        # tag. (readme_pin is stdlib-only; no pip install needed here.)
+        # Before the PyPI step on purpose: a PyPI failure must not leave the
+        # documented install pin behind the release. The README documents
+        # install with a pinned @vX.Y.Z ref; this pushes it back to main so
+        # the docs always point at the newest tag. (readme_pin is
+        # stdlib-only; no pip install needed here.)
         if: steps.prep.outputs.created == 'true'
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -130,3 +127,10 @@ jobs:
             git push origin main
             echo "README install pin synced to ${VER}"
           fi
+      - name: Trigger PyPI publish
+        # GITHUB_TOKEN-created release events do not start workflows, but
+        # workflow_dispatch events do. pypi.yml publishes from the tag ref.
+        if: steps.prep.outputs.created == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: gh workflow run pypi.yml --ref "${{ steps.prep.outputs.tag }}"
