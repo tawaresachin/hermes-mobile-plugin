@@ -591,7 +591,7 @@ class TestInstallRestart:
     which is how a NameError (`changed`) shipped to users."""
 
     @staticmethod
-    def _patch(monkeypatch, *, seeded):
+    def _patch(monkeypatch, *, seeded, deployed_before=None):
         from hermes_mobile_plugin import cli, envdetect
 
         killed = []
@@ -605,6 +605,8 @@ class TestInstallRestart:
             "seeded_config": seeded, "seeded_env": False, "key": "k" * 32})
         monkeypatch.setattr(cli, "print_seed_report", lambda report: None)
         monkeypatch.setattr(cli, "remove_legacy_install", lambda: False)
+        # Never read the developer's real deploy dir.
+        monkeypatch.setattr(cli, "_deployed_version", lambda target: deployed_before)
         monkeypatch.setattr(cli, "deploy_plugin_files", lambda target: [])
         monkeypatch.setattr(envdetect, "find_runtime_venv", lambda: None)
         monkeypatch.setattr(envdetect, "venv_module_version", lambda venv: None)
@@ -639,6 +641,28 @@ class TestInstallRestart:
 
         assert cli.cmd_install(argparse.Namespace()) == 0
         assert killed == [4242]
+
+    def test_plugin_upgrade_restarts_the_gateway(self, monkeypatch, capsys):
+        """The venv imports the plugin through a .pth at the deploy dir, so
+        after deployment it already reports the NEW version — the pre-deploy
+        version is the only signal that the running gateway is on old code."""
+        from hermes_mobile_plugin import cli
+
+        killed = self._patch(monkeypatch, seeded=False, deployed_before="0.0.1")
+
+        assert cli.cmd_install(argparse.Namespace()) == 0
+        assert killed == [4242]
+
+    def test_same_version_reinstall_is_left_alone(self, monkeypatch, capsys):
+        from hermes_mobile_plugin import cli
+        from hermes_mobile_plugin.constants import PLUGIN_VERSION
+
+        killed = self._patch(monkeypatch, seeded=False,
+                             deployed_before=PLUGIN_VERSION)
+
+        assert cli.cmd_install(argparse.Namespace()) == 0
+        assert killed == []
+        assert "no restart needed" in capsys.readouterr().out
 
     def test_changed_run_waits_for_the_old_gateway_to_exit_first(self, monkeypatch, capsys):
         """Ordering is the fix: a draining gateway still answers /health and

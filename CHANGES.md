@@ -1,5 +1,21 @@
 # Hermes Mobile QR Plugin
 
+## 0.0.36 — an upgrade now actually restarts the gateway
+
+The restart-on-change decision compared the plugin version read through the
+runtime venv — but that venv imports the plugin via a `.pth` pointing at the
+deploy directory, which step 3 had *just* overwritten with the new files.
+The comparison therefore read back the version it had written moments
+earlier and always concluded "nothing changed": upgrading the plugin left
+the running gateway on the previous release's code. Found live upgrading
+0.0.34 → 0.0.35, which printed "nothing changed — no restart needed".
+
+`install` now records the deployed version BEFORE it deploys and restarts a
+running gateway when that version differs from the one being installed.
+Re-installing the *same* version is still left alone (a needless restart
+SIGTERMs live chat turns) — that case needs a manual
+`hermes gateway restart` if the code changed under an unchanged version.
+
 ## 0.0.35 — the restart that actually leaves a working gateway
 
 0.0.34 fixed the `NameError` and so, for the first time, the post-install

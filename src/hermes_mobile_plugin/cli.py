@@ -18,6 +18,7 @@ del io, _sys, _stream
 import argparse
 import logging
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -96,6 +97,10 @@ def cmd_install(args: argparse.Namespace) -> int:
     # Step 3: Deploy plugin files into Hermes' plugins directory (the same
     # deployment the .bat/.sh installers and hermes-mobile-install use).
     print("📦 Step 3/6: Deploying plugin files...")
+    # Read the CURRENT deployed version before the deploy replaces it: the
+    # venv imports the plugin through this directory, so afterwards it already
+    # reports the new version (see _deployed_version).
+    deployed_before = _deployed_version(PLUGIN_DIR)
     try:
         if remove_legacy_install():
             print(f"   🧹 removed the pre-0.0.34 install ({LEGACY_PLUGIN_NAME})")
@@ -186,7 +191,11 @@ def cmd_install(args: argparse.Namespace) -> int:
     print()
 
     restarted = False
-    if gw_running and health_before and not (config_changed or venv_upgraded):
+    # An upgrade replaces the very directory the runtime venv imports through
+    # its .pth, so the version read AFTER the deploy is already the new one —
+    # only the pre-deploy value shows that a running gateway is on old code.
+    deploy_upgraded = bool(deployed_before and deployed_before != PLUGIN_VERSION)
+    if gw_running and health_before and not (config_changed or venv_upgraded or deploy_upgraded):
         # Nothing this run wrote: the running gateway is already the truth.
         print(f"🔄 Gateway is healthy (port {port}) and nothing changed — "
               "no restart needed.")
@@ -509,6 +518,23 @@ def remove_legacy_install() -> bool:
     if legacy_dir.is_dir():  # no launcher (or it refused): drop it here
         shutil.rmtree(legacy_dir, ignore_errors=True)
     return True
+
+
+def _deployed_version(target_dir: Path) -> str | None:
+    """Version of the plugin already sitting at target_dir (None when absent).
+
+    Must be read BEFORE this run deploys. The runtime venv imports the plugin
+    through a .pth pointing at this directory, so once the files are replaced
+    the venv reports the NEW version — an upgrade would then look like
+    "nothing changed" and the running gateway would silently keep the old
+    code. (Re-installing the SAME version with edited code still needs a
+    manual `hermes gateway restart`; releases always change the version.)"""
+    try:
+        text = (target_dir / "plugin.yaml").read_text(encoding="utf-8")
+    except OSError:
+        return None
+    match = re.search(r'^version:\s*"?([^"\s]+)"?', text, re.M)
+    return match.group(1) if match else None
 
 
 def deploy_plugin_files(target_dir: Path) -> list[Path]:

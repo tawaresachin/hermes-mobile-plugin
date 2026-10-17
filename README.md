@@ -47,7 +47,7 @@ Into the same Python environment your Hermes Agent runs in (its venv) — Python
 newer is required (macOS has no `pip` command; use `python3 -m pip`):
 
 ```bash
-python3 -m pip install git+https://github.com/tawaresachin/hermes-mobile-plugin@v0.0.35
+python3 -m pip install git+https://github.com/tawaresachin/hermes-mobile-plugin@v0.0.36
 # or from the release page: pip install hermes_mobile_plugin-<ver>-py3-none-any.whl
 hermes-mobile-plugin install   # key + bind host + deploy + enable + runtime env + gateway + QR
 hermes plugins list            # must show: hermes-mobile-plugin   enabled
