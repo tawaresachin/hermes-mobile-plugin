@@ -2,6 +2,12 @@
 
 Monitors Hermes Agent gateway health and auto-restarts if needed.
 Runs as a daemon process 24/7.
+
+Why this exists alongside Hermes' own supervision: observed live, a
+gracefully exited gateway was NOT revived by the host's launchd job
+(ai.hermes.gateway) — the plugin watchdog was what brought it back. Do not
+delete this as "duplication" without rechecking that Hermes revives a
+gracefully-exited gateway on every supported host.
 """
 
 import logging
