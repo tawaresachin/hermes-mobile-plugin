@@ -1,6 +1,6 @@
 # Hermes Mobile QR Plugin
 
-## 0.0.29 — auth fails closed, seeder can't destroy config, dead code removed
+## 0.0.30 — auth fails closed, seeder can't destroy config, dead code removed
 
 Three latent traps found in a follow-up audit of the plugin's trust
 boundaries:
