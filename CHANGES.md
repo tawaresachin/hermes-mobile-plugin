@@ -1,6 +1,6 @@
 # Hermes Mobile QR Plugin
 
-## 0.0.30 — auth fails closed, seeder can't destroy config, dead code removed
+## 0.0.31 — auth fails closed, seeder can't destroy config, dead code removed
 
 Three latent traps found in a follow-up audit of the plugin's trust
 boundaries:
@@ -26,6 +26,11 @@ field, and an adapter `except` the host's `_expected_api_key` can never
 raise — plus unused imports/locals. `register(ctx)`/`create_plugin` are
 untouched (the former is the live host contract, the latter pinned by
 `tests/test_install.py` and `install.sh`). Three new tests pin the fixes.
+
+First release through the repaired release pipeline: tag, wheel, sdist and
+`SHA256SUMS` now ship together, and PyPI publishes from the same run. (The
+0.0.29/0.0.30 tags were consumed by the old flow before any artifact could
+be attached, so those two carry no downloadables.)
 
 ## 0.0.28 — cross-platform compat: Windows venv detection, macOS liveness, working update-apply heal
 

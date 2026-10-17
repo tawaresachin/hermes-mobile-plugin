@@ -1,10 +1,15 @@
 name: Auto-tag release
 
 # plugin.yaml is the single source of the version string. When a push to
-# main changes it to a version with no tag yet, tag it and open the
-# GitHub Release — which chains CI (build + verify + attach artifacts)
-# and the PyPI trusted-publishing workflow automatically. Same-version
-# content changes are inert.
+# main changes it to a version with no tag yet, this workflow tags it,
+# builds the wheel + sdist, attaches them to the GitHub Release and then
+# kicks PyPI. Same-version content changes are inert.
+#
+# Why one workflow does all of it: tags pushed with GITHUB_TOKEN do NOT
+# start other workflows, so a separate tag-triggered release job can never
+# run (this is how every release from 0.0.19-0.0.30 ended up with a tag
+# but no artifacts). Events triggered by GITHUB_TOKEN are exempt only for
+# workflow_dispatch/repository_dispatch, so PyPI is kicked that way.
 on:
   push:
     branches: [main]
@@ -16,7 +21,7 @@ permissions:
 
 jobs:
   tag:
-    name: tag + release when plugin.yaml's version is untagged
+    name: tag + build + release when plugin.yaml's version is untagged
     runs-on: ubuntu-latest
     outputs:
       tag: ${{ steps.prep.outputs.tag }}
@@ -25,6 +30,9 @@ jobs:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
       - id: prep
         run: |
           VER="$(sed -n 's/^version:[[:space:]]*"\{0,1\}\([^"[:space:]]*\)"\{0,1\}.*/\1/p' plugin.yaml | head -1)"
@@ -49,18 +57,58 @@ jobs:
             f {print}
           ' CHANGES.md > release-notes.md
           test -s release-notes.md || echo "Release $VER" > release-notes.md
-      - name: Create tag + GitHub Release
+      - name: Create tag
         if: steps.prep.outputs.created == 'true'
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git tag -a "${{ steps.prep.outputs.tag }}" -m "${{ steps.prep.outputs.tag }} (versioned by plugin.yaml)"
           git push origin "${{ steps.prep.outputs.tag }}"
-          gh release create "${{ steps.prep.outputs.tag }}" \
-            --title "${{ steps.prep.outputs.tag }}" \
-            --notes-file release-notes.md
+      - name: Build wheel + sdist
+        if: steps.prep.outputs.created == 'true'
+        run: |
+          python -m pip install -U build
+          python -m build
+      - name: Verify the wheel's bundled manifest matches the tag
+        if: steps.prep.outputs.created == 'true'
+        env:
+          TAG_NAME: ${{ steps.prep.outputs.tag }}
+        run: |
+          python - <<'PY'
+          import glob, os, re, zipfile
+
+          tag = os.environ["TAG_NAME"].lstrip("v")
+          wheel = glob.glob("dist/*.whl")[0]
+          manifest = zipfile.ZipFile(wheel).read("hermes_mobile_plugin/plugin.yaml").decode()
+          m = re.search(r'^version:\s*"?([^"\s]+)"?', manifest, re.M)
+          assert m and m.group(1) == tag, f"wheel manifest says {m and m.group(1)}, tag says {tag}"
+          print(f"OK: {wheel} carries version {tag}")
+          PY
+          cd dist
+          sha256sum *.whl *.tar.gz > SHA256SUMS
+          cat SHA256SUMS
+      # Draft -> upload -> publish, so the artifacts exist BEFORE the
+      # release is published: immutable-release settings reject uploads to
+      # an already-published release, and a tag used by an immutable
+      # release can never be reused.
+      - name: Create the Release, attach artifacts, publish
+        if: steps.prep.outputs.created == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          TAG="${{ steps.prep.outputs.tag }}"
+          gh release create "$TAG" --draft --title "$TAG" \
+            --notes-file release-notes.md --verify-tag
+          gh release upload "$TAG" dist/*.whl dist/*.tar.gz dist/SHA256SUMS
+          gh release edit "$TAG" --draft=false --latest
+          gh release view "$TAG" --json assets --jq '[.assets[].name]'
+      - name: Trigger PyPI publish
+        # GITHUB_TOKEN-created release events do not start workflows, but
+        # workflow_dispatch events do. pypi.yml publishes from the tag ref.
+        if: steps.prep.outputs.created == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: gh workflow run pypi.yml --ref "${{ steps.prep.outputs.tag }}"
       - name: Sync README install pin to the new tag
         # The README documents install with a pinned @vX.Y.Z ref; without
         # this step it silently drifts one release behind on every tag.

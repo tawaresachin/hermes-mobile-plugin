@@ -32,12 +32,14 @@ jobs:
           python -m pip install -U build
           python -m build
       - name: Verify artifact version matches the tag
-        if: github.event_name == 'release'
         run: |
           python - <<'PY'
           import glob, re, zipfile
 
-          tag = "${{ github.event.release.tag_name }}".lstrip("v")
+          # release event -> the release's tag; workflow_dispatch -> the ref
+          # it was dispatched on (auto-tag kicks PyPI that way, because
+          # GITHUB_TOKEN release events don't start workflows).
+          tag = "${{ github.event.release.tag_name || github.ref_name }}".lstrip("v")
           wheel = glob.glob("dist/*.whl")[0]
           manifest = zipfile.ZipFile(wheel).read("hermes_mobile_plugin/plugin.yaml").decode()
           m = re.search(r'^version:\s*"?([^"\s]+)"?', manifest, re.M)
