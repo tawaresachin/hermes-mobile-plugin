@@ -1,8 +1,7 @@
 """Tests for Hermes Mobile Plugin configuration module."""
 
 import pytest
-from pathlib import Path
-from unittest.mock import patch, MagicMock
+from unittest.mock import patch
 import yaml
 
 from hermes_mobile_plugin.config import (

@@ -7,7 +7,6 @@ the restart; these tests pin its decision paths (no-op, best-effort, and
 that the wired-in step argv actually runs it).
 """
 import subprocess
-import sys
 from pathlib import Path
 
 from hermes_mobile_plugin import heal_runtime_venv, update_routes

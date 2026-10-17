@@ -1,5 +1,3 @@
-import pytest
-from pathlib import Path
 from hermes_mobile_plugin.ip_detector import get_tailscale_ip
 from hermes_mobile_plugin.qr_generator import (
     build_connection_config,
@@ -83,7 +81,6 @@ def test_qr_uri_uses_connect_scheme_and_encodes(monkeypatch):
                     return "<svg></svg>"
             return Img()
 
-    import qrcode as qrcode_module
     monkeypatch.setattr("hermes_mobile_plugin.qr_generator.qrcode.QRCode", FakeQR)
     data = {
         "url": "http://100.1.2.3:8642",

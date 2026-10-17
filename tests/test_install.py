@@ -9,7 +9,6 @@ import argparse
 import importlib
 import subprocess
 import sys
-from pathlib import Path
 
 from hermes_mobile_plugin import cli
 from hermes_mobile_plugin.constants import PLUGIN_VERSION

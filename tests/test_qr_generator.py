@@ -2,9 +2,7 @@ from hermes_mobile_plugin.constants import PLUGIN_VERSION
 """Tests for Hermes Mobile Plugin QR generator module."""
 
 import pytest
-from pathlib import Path
-from unittest.mock import patch, MagicMock
-import json
+from unittest.mock import patch
 
 from hermes_mobile_plugin.qr_generator import (
     build_connection_config,

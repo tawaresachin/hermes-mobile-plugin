@@ -6,7 +6,6 @@ platform seams (launcher lookup, detach kwargs, PID probing, HTML escape).
 import os
 import sys
 
-import pytest
 
 from hermes_mobile_plugin.constants import find_hermes_cli, gateway_health_url
 from hermes_mobile_plugin.supervisor import _detach_kwargs, pid_alive, terminate_pid

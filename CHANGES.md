@@ -1,5 +1,19 @@
 # Hermes Mobile QR Plugin
 
+## 0.0.32 — dead test imports removed; first release through the rebuilt pipeline
+
+Housekeeping only — no product code touched:
+
+- Removed 12 unused imports across seven test modules (`ruff F401`); `src/`
+  and `tests/` are now clean for every `F` rule. One of them — a bare
+  `import qrcode as qrcode_module` inside a QR test — was a silent
+  dependency on `qrcode` being installed that the test never used.
+
+This is the first release carried end to end by `auto-tag.yml`
+(tag → build → verify → draft release → attach → publish → PyPI). Before
+the 0.0.31 pipeline fix, that workflow could not attach artifacts or reach
+PyPI at all.
+
 ## 0.0.31 — auth fails closed, seeder can't destroy config, dead code removed
 
 Three latent traps found in a follow-up audit of the plugin's trust

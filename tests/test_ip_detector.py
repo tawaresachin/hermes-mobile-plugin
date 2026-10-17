@@ -1,6 +1,5 @@
 """Tests for Hermes Mobile Plugin IP detector module."""
 
-import pytest
 from unittest.mock import patch, MagicMock
 import subprocess
 
