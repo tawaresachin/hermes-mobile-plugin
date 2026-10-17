@@ -1,5 +1,27 @@
 # Hermes Mobile QR Plugin
 
+## 0.0.35 — the restart that actually leaves a working gateway
+
+0.0.34 fixed the `NameError` and so, for the first time, the post-install
+restart really ran against a healthy gateway. That exposed the race it was
+racing all along:
+
+- A gateway handles SIGTERM by **draining**: it keeps its listening socket and
+  keeps answering `/health` until in-flight work is done. The install read
+  `/health` straight after the SIGTERM, so it described the *dying* process and
+  declared success immediately. Meanwhile the 24x7 watchdog (10s cycle) had
+  respawned the replacement into the still-held port: `EADDRINUSE` → api_server
+  parked and never retried → **the phone reached nothing** while Telegram kept
+  working. Found live on macOS right after the 0.0.34 install (gateway
+  degraded, `/health` 000).
+- `install` now waits for the terminated PID to actually exit before trusting
+  `/health`, and if the replacement still booted into the held port it restarts
+  that instance once more, now that the port is free. The final message points
+  at `hermes gateway restart` when a gateway is somehow still down.
+
+Three tests cover the restart decision end to end (order of the drain wait,
+the unchanged-run no-op, and the held-port retry).
+
 ## 0.0.34 — the install that crashed at the finish line; plugin renamed
 
 0.0.33 shipped a defect at the very end of `install` and mixed two names for

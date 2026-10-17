@@ -619,6 +619,7 @@ class TestInstallRestart:
         monkeypatch.setattr(cli, "is_supervisor_running", lambda: True)
         monkeypatch.setattr(cli, "read_supervisor_pid", lambda: 99)
         monkeypatch.setattr(cli, "terminate_pid", killed.append)
+        monkeypatch.setattr(cli, "_wait_for_exit", lambda pid, timeout_s=90.0: True)
         monkeypatch.setattr(cli, "_wait_for_health", lambda port, timeout_s: True)
         return killed
 
@@ -638,3 +639,43 @@ class TestInstallRestart:
 
         assert cli.cmd_install(argparse.Namespace()) == 0
         assert killed == [4242]
+
+    def test_changed_run_waits_for_the_old_gateway_to_exit_first(self, monkeypatch, capsys):
+        """Ordering is the fix: a draining gateway still answers /health and
+        still holds the port, so health must be read only after it is gone."""
+        from hermes_mobile_plugin import cli
+
+        order = []
+        self._patch(monkeypatch, seeded=True)
+        monkeypatch.setattr(cli, "_wait_for_exit",
+                            lambda pid, timeout_s=90.0: (order.append("exit"), True)[1])
+        monkeypatch.setattr(cli, "_wait_for_health",
+                            lambda port, timeout_s: (order.append("health"), True)[1])
+
+        assert cli.cmd_install(argparse.Namespace()) == 0
+        assert order == ["exit", "health"]
+
+    def test_respawn_into_a_held_port_gets_one_more_restart(self, monkeypatch, capsys):
+        """A gateway drains while still holding the port, so the watchdog's
+        replacement hits EADDRINUSE and parks api_server for good — the phone
+        then reaches nothing (seen live). Install restarts that instance once
+        more, now that the port is free."""
+        from hermes_mobile_plugin import cli
+
+        killed = self._patch(monkeypatch, seeded=True)
+        calls = {"n": 0}
+
+        def pid_after_restart():
+            calls["n"] += 1
+            return 4242 if calls["n"] == 1 else 5555
+
+        monkeypatch.setattr(cli, "gateway_pid", pid_after_restart)
+        # Healthy only once the retry has happened.
+        monkeypatch.setattr(cli, "_wait_for_health",
+                            lambda port, timeout_s: len(killed) > 1)
+
+        assert cli.cmd_install(argparse.Namespace()) == 0
+        assert killed == [4242, 5555]
+        out = capsys.readouterr().out
+        assert "restarting it once more" in out
+        assert "Gateway is healthy" in out

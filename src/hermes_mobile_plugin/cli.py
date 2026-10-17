@@ -196,6 +196,9 @@ def cmd_install(args: argparse.Namespace) -> int:
         print(f"🔄 Restarting running gateway (PID {gw_pid}) under the "
               "24x7 supervisor...")
         terminate_pid(gw_pid)
+        # Wait for the drain to finish BEFORE trusting /health: the dying
+        # gateway is still answering it (see _wait_for_exit).
+        old_exited = _wait_for_exit(gw_pid)
         restarted = True
     elif gw_running and not sup_ensured:
         print(f"   ⚠️  Gateway running (PID {gw_pid}) but the supervisor "
@@ -214,6 +217,17 @@ def cmd_install(args: argparse.Namespace) -> int:
         # wait-for-healthy + QR refresh; every other path already produced
         # a key-baked QR in Step 6 (or has no gateway to wait for).
         healthy = _wait_for_health(port, timeout_s=60.0)
+        if not healthy and old_exited:
+            # The watchdog respawned the gateway while the draining one still
+            # held the port; that instance parked api_server and never
+            # recovers on its own. The port is free now — one clean retry.
+            new_pid = gateway_pid()
+            if new_pid and new_pid != gw_pid and _pid_alive(new_pid):
+                print("   ⚠️  The new gateway took the port before the old one "
+                      "released it — restarting it once more.")
+                terminate_pid(new_pid)
+                _wait_for_exit(new_pid)
+                healthy = _wait_for_health(port, timeout_s=60.0)
         print("📷 Regenerating QR code with the live connection details...")
         try:
             import asyncio
@@ -226,7 +240,8 @@ def cmd_install(args: argparse.Namespace) -> int:
             print(f"✅ Gateway is healthy on port {port} — the QR above is live.")
         else:
             print(f"⚠️  Gateway not healthy yet (port {port}) — the supervisor is "
-                  "monitoring it and will bring it up; re-run 'hermes-mobile-plugin status'.")
+                  "monitoring it; check 'hermes-mobile-plugin status' and run "
+                  "'hermes gateway restart' if it stays down.")
 
     # Summary
     print()
@@ -397,6 +412,21 @@ def _pid_alive(pid: int) -> bool:
     from .supervisor import pid_alive
 
     return pid_alive(pid)
+
+
+def _wait_for_exit(pid: int, timeout_s: float = 90.0) -> bool:
+    """Wait for a SIGTERM'd process to actually go away.
+
+    A gateway drains gracefully: it keeps its listening socket and keeps
+    answering /health until its in-flight work finishes. Reading health right
+    after the SIGTERM therefore describes the DYING process, and the watchdog
+    (10s cycle) respawns its replacement into the still-held port — that boot
+    parks api_server for good. Observed live: /health 000, Telegram-only
+    gateway, the phone could not reach the agent at all."""
+    deadline = time.monotonic() + timeout_s
+    while _pid_alive(pid) and time.monotonic() < deadline:
+        time.sleep(1.0)
+    return not _pid_alive(pid)
 
 
 def _gateway_health(port: int, timeout: float = 3.0) -> bool:
