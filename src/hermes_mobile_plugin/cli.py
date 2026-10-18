@@ -23,6 +23,7 @@ import shutil
 import subprocess
 import sys
 import time
+import webbrowser
 from pathlib import Path
 
 from .config import load_hermes_config, validate_config
@@ -152,9 +153,11 @@ def cmd_install(args: argparse.Namespace) -> int:
 
     # Step 6: Generate QR code (with the now-guaranteed key baked in)
     print("📷 Step 6/6: Generating QR code...")
+    qr_path = None
     try:
         import asyncio
         output_path = asyncio.run(generate_qr(config, open_browser=False, save_file=True))
+        qr_path = Path(output_path)
         print(f"   ✅ QR code generated: {output_path}")
     except Exception as e:
         print(f"   ⚠️  QR generation failed: {e}")
@@ -242,6 +245,7 @@ def cmd_install(args: argparse.Namespace) -> int:
             import asyncio
             config = load_hermes_config()
             output_path = asyncio.run(generate_qr(config, open_browser=False, save_file=True))
+            qr_path = Path(output_path)
             print(f"   ✅ QR code generated: {output_path}")
         except Exception as e:
             print(f"   ⚠️  QR generation failed: {e}")
@@ -251,6 +255,15 @@ def cmd_install(args: argparse.Namespace) -> int:
             print(f"⚠️  Gateway not healthy yet (port {port}) — the supervisor is "
                   "monitoring it; check 'hermes-mobile-plugin status' and run "
                   "'hermes gateway restart' if it stays down.")
+
+    # Put the pairing code in front of the human — it is what this run exists
+    # for. Opened once, after the last write (a restart rewrites the page).
+    if (qr_path is not None and not getattr(args, "no_browser", False)
+            and _desktop_session()):
+        if _open_qr_page(qr_path):
+            print(f"🌐 Opening the QR page in your browser: {qr_path}")
+        else:
+            print(f"ℹ️  Open this file to see the QR: {qr_path}")
 
     # Summary
     print()
@@ -273,6 +286,7 @@ def cmd_install(args: argparse.Namespace) -> int:
     print_connection_details(config)
     print()
     print("📊 Management commands:")
+    print("   hermes-mobile-plugin qr          # show the pairing QR again")
     print("   hermes-mobile-plugin status      # Check supervisor status")
     print("   hermes-mobile-plugin supervisor  # Start supervisor manually")
     print("   hermes-mobile-plugin supervisor --stop  # Stop supervisor")
@@ -436,6 +450,26 @@ def _wait_for_exit(pid: int, timeout_s: float = 90.0) -> bool:
     while _pid_alive(pid) and time.monotonic() < deadline:
         time.sleep(1.0)
     return not _pid_alive(pid)
+
+
+def _desktop_session() -> bool:
+    """True where opening a browser window is plausible.
+
+    Linux is the case that matters: on a headless box (SSH, server, CI) there
+    is no display, and `webbrowser` would fall back to a text browser such as
+    lynx — a "QR code" nobody can scan, holding the terminal open.
+    """
+    if os.name == "nt" or sys.platform == "darwin":
+        return True
+    return bool(os.environ.get("DISPLAY") or os.environ.get("WAYLAND_DISPLAY"))
+
+
+def _open_qr_page(path: Path) -> bool:
+    """Show the QR page to whoever just ran the install."""
+    try:
+        return webbrowser.open(path.absolute().as_uri())
+    except Exception:  # noqa: BLE001 - showing a QR must never fail the install
+        return False
 
 
 def _gateway_health(port: int, timeout: float = 3.0) -> bool:
@@ -688,10 +722,15 @@ Examples:
     subparsers = parser.add_subparsers(dest="command", help="Available commands")
 
     # Install command
-    subparsers.add_parser(
+    install_parser = subparsers.add_parser(
         "install",
         help="Full setup: install, generate QR, start supervisor",
         description="Complete one-command installation with QR generation and 24x7 gateway monitoring",
+    )
+    install_parser.add_argument(
+        "--no-browser",
+        action="store_true",
+        help="Don't open the QR page automatically",
     )
 
     # QR command

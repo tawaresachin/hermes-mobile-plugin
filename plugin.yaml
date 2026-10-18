@@ -1,5 +1,5 @@
 name: hermes-mobile-plugin
-version: "0.0.36"
+version: "0.0.37"
 description: |
   QR pairing and voice for the Hermes Mobile app: seeds the gateway API key,
   allows phone access and adds the STT/TTS/attachment routes.

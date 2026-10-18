@@ -623,6 +623,9 @@ class TestInstallRestart:
         monkeypatch.setattr(cli, "terminate_pid", killed.append)
         monkeypatch.setattr(cli, "_wait_for_exit", lambda pid, timeout_s=90.0: True)
         monkeypatch.setattr(cli, "_wait_for_health", lambda port, timeout_s: True)
+        # Never launch a real browser from the test suite.
+        monkeypatch.setattr(cli, "_desktop_session", lambda: True)
+        monkeypatch.setattr(cli, "_open_qr_page", lambda path: True)
         return killed
 
     def test_unchanged_run_leaves_a_healthy_gateway_running(self, monkeypatch, capsys):
@@ -663,6 +666,44 @@ class TestInstallRestart:
         assert cli.cmd_install(argparse.Namespace()) == 0
         assert killed == []
         assert "no restart needed" in capsys.readouterr().out
+
+    def test_install_opens_the_qr_page(self, monkeypatch, capsys):
+        """The pairing code is the point of the run: no hunting for the file."""
+        from hermes_mobile_plugin import cli
+
+        opened = []
+        self._patch(monkeypatch, seeded=False)
+        monkeypatch.setattr(cli, "_open_qr_page",
+                            lambda path: (opened.append(str(path)), True)[1])
+
+        assert cli.cmd_install(argparse.Namespace()) == 0
+        assert opened == ["qr.html"]
+        assert "Opening the QR page" in capsys.readouterr().out
+
+    def test_no_browser_flag_skips_the_qr_page(self, monkeypatch, capsys):
+        from hermes_mobile_plugin import cli
+
+        opened = []
+        self._patch(monkeypatch, seeded=False)
+        monkeypatch.setattr(cli, "_open_qr_page",
+                            lambda path: (opened.append(str(path)), True)[1])
+
+        assert cli.cmd_install(argparse.Namespace(no_browser=True)) == 0
+        assert opened == []
+
+    def test_headless_session_skips_the_qr_page(self, monkeypatch, capsys):
+        """On a server there is no display: webbrowser would fall back to a
+        text browser, which cannot show a scannable QR."""
+        from hermes_mobile_plugin import cli
+
+        opened = []
+        self._patch(monkeypatch, seeded=False)
+        monkeypatch.setattr(cli, "_desktop_session", lambda: False)
+        monkeypatch.setattr(cli, "_open_qr_page",
+                            lambda path: (opened.append(str(path)), True)[1])
+
+        assert cli.cmd_install(argparse.Namespace()) == 0
+        assert opened == []
 
     def test_changed_run_waits_for_the_old_gateway_to_exit_first(self, monkeypatch, capsys):
         """Ordering is the fix: a draining gateway still answers /health and

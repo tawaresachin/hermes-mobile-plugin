@@ -1,5 +1,21 @@
 # Hermes Mobile QR Plugin
 
+## 0.0.37 — the QR shows itself, and the docs say where it lives
+
+Three gaps reported from the app's pairing instructions:
+
+- **`install` never opened the QR it wrote**, so "scan the code on your
+  computer" left you hunting for a file. It now opens the page in your
+  browser at the end of the run — once, after the last write (a restart
+  rewrites it). `--no-browser` skips it, and a headless host (no `DISPLAY`,
+  e.g. SSH or CI) is never asked: there `webbrowser` falls back to a text
+  browser and holds the terminal with a QR nobody can scan.
+- **The exact location is documented**: `~/.hermes/plugins/hermes-mobile-plugin/
+  qr_code.html` (`%LOCALAPPDATA%\hermes\plugins\hermes-mobile-plugin\qr_code.html`
+  on Windows), printed at the end of every install and listed in the README.
+- **Regeneration is named** in the install summary and the README:
+  `hermes-mobile-plugin qr` (add `--no-browser` to write it without opening).
+
 ## 0.0.36 — an upgrade now actually restarts the gateway
 
 The restart-on-change decision compared the plugin version read through the
