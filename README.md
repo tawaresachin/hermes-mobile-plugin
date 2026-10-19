@@ -125,6 +125,7 @@ Mounted on the api_server platform; the mobile app is the client.
 | `POST /api/audio/upload` · `GET /api/audio/download/{sid}/{name}` | attachments both ways |
 | `GET /api/mobile/file` | fetch agent-created files for MEDIA cards |
 | `GET /api/mobile/commands` · `POST /api/mobile/command/resolve` | slash-command menu |
+| `GET /api/mobile/skills` | installed-skill manifest (Settings panel fallback) |
 | `GET /api/mobile/context-usage` · `GET /api/mobile/context-window` | context meter |
 | `GET /api/mobile/update/check` · `POST /update/apply` · `GET /update/version` | server self-update |
 | `GET /api/system/status` · `POST /api/system/awake` | host status, keep-awake |

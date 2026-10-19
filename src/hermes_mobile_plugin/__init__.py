@@ -106,6 +106,7 @@ def _wire_audio_routes(native: Any, adapter: Any) -> None:
             from .audio_routes import register as _register_routes
             from .system_routes import register as _register_system_routes
             from .commands_routes import register as _register_command_routes
+            from .skills_routes import register as _register_skills_routes
             from .update_routes import register as _register_update_routes
             from .providers_routes import register as _register_providers_routes
         except Exception as exc:
@@ -123,6 +124,7 @@ def _wire_audio_routes(native: Any, adapter: Any) -> None:
             _register_routes(native)
             _register_system_routes(native)
             _register_command_routes(native)
+            _register_skills_routes(native)
             _register_update_routes(native)
             _register_providers_routes(native)
         except Exception as exc:
