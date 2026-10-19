@@ -36,17 +36,24 @@ _cache: tuple[float, dict] | None = None
 
 
 def _list_skills() -> list[dict[str, Any]]:
-    """The same catalog ``/skills list`` shows, tolerating any release's
-    ``_find_all_skills`` signature: pass ``include_editorial`` only when the
-    installed tool accepts it (newer trees); current releases take
-    ``skip_disabled`` alone. Returns dicts the route serializes verbatim."""
-    from tools.skills_tool import _find_all_skills, _sort_skills
+    """The same catalog ``/skills list`` shows, tolerating the installed
+    release: the functions were private in 0.22.2 (``_find_all_skills``)
+    and renamed public on later trees (``find_all_skills``); pass
+    ``include_editorial`` only when the installed tool accepts it."""
+    from tools import skills_tool
 
-    params = inspect.signature(_find_all_skills).parameters
+    find_all = getattr(skills_tool, "find_all_skills", None)
+    if find_all is None:
+        find_all = skills_tool._find_all_skills
+    sort = getattr(skills_tool, "sort_skills", None)
+    if sort is None:
+        sort = skills_tool._sort_skills
+
+    params = inspect.signature(find_all).parameters
     kwargs: dict[str, Any] = {"skip_disabled": False}
     if "include_editorial" in params:
         kwargs["include_editorial"] = True
-    return _sort_skills(_find_all_skills(**kwargs))
+    return sort(find_all(**kwargs))
 
 
 @require_key

@@ -28,9 +28,12 @@ def fresh_cache(monkeypatch):
     monkeypatch.setattr(skills_routes, "_cache", None)
 
 
-def _install_fake_skills_tool(monkeypatch, accept_include_editorial: bool) -> list:
+def _install_fake_skills_tool(monkeypatch, accept_include_editorial: bool,
+                              public_names: bool = False) -> list:
     """Point ``tools.skills_tool`` at a fake module matching a release's
-    signature; returns the kwarg log so tests assert which kwargs landed."""
+    signature + naming; returns the kwarg log so tests assert which kwargs
+    landed. ``public_names=False`` mirrors 0.22.2 (``_find_all_skills``),
+    ``public_names=True`` mirrors later trees (``find_all_skills``)."""
     calls: list[dict] = []
 
     if accept_include_editorial:
@@ -42,9 +45,14 @@ def _install_fake_skills_tool(monkeypatch, accept_include_editorial: bool) -> li
             calls.append({"skip_disabled": skip_disabled})
             return [{"name": "x", "description": "d", "category": "c"}]
 
+    sort_skills = lambda skills: sorted(skills, key=lambda s: s["name"])
     fake_module = types.ModuleType("tools.skills_tool")
-    setattr(fake_module, "_find_all_skills", find_all_skills)
-    setattr(fake_module, "_sort_skills", lambda skills: sorted(skills, key=lambda s: s["name"]))
+    if public_names:
+        setattr(fake_module, "find_all_skills", find_all_skills)
+        setattr(fake_module, "sort_skills", sort_skills)
+    else:
+        setattr(fake_module, "_find_all_skills", find_all_skills)
+        setattr(fake_module, "_sort_skills", sort_skills)
     fake_parent = types.ModuleType("tools")
     setattr(fake_parent, "skills_tool", fake_module)
     monkeypatch.setitem(sys.modules, "tools", fake_parent)
@@ -56,6 +64,16 @@ def test_old_signature_no_include_editorial_kwarg(monkeypatch):
     """Current releases (0.22.2): the tool takes only skip_disabled. The
     route must NOT forward include_editorial — that is the 500 we avoid."""
     calls = _install_fake_skills_tool(monkeypatch, accept_include_editorial=False)
+    result = skills_routes._list_skills()
+    assert result == [{"name": "x", "description": "d", "category": "c"}]
+    assert calls == [{"skip_disabled": False}]
+
+
+def test_public_names_later_trees(monkeypatch):
+    """Later trees renamed the private helpers public; the route must find
+    ``find_all_skills``/``sort_skills`` on that shape too."""
+    calls = _install_fake_skills_tool(monkeypatch, accept_include_editorial=False,
+                                      public_names=True)
     result = skills_routes._list_skills()
     assert result == [{"name": "x", "description": "d", "category": "c"}]
     assert calls == [{"skip_disabled": False}]
