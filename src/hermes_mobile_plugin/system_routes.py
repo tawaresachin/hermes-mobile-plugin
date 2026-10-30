@@ -8,21 +8,26 @@ same api_server aiohttp application as the audio routes.
   POST   /api/system/awake   {awake}  -> {ok, mechanism}
   POST   /api/diag/log     {device, version, log} -> {ok, path}
 
-Awake control uses Termux's termux-wake-lock / termux-wake-unlock when
-present (this install runs on Termux/Android); on other platforms the routes
-report the capability honestly (awake=false, mechanism=null, POST -> 501) so
-the app UI degrades instead of lying. All routes — including the status
-probe — require the gateway Bearer key.
+Awake control picks the native mechanism for the host OS — termux-wake-lock
+(Termux/Android), caffeinate (macOS), SetThreadExecutionState (Windows), or
+systemd-inhibit (Linux) — and degrades honestly (awake_mechanism=null,
+POST -> 501) when a host has none available, so the app UI degrades instead
+of lying. All routes — including the status probe — require the gateway
+Bearer key.
 """
 
 from __future__ import annotations
 
 import asyncio
+import ctypes
 import logging
+import os
 import platform
 import shutil
+import signal
 import subprocess
 import sys
+import threading
 import time
 from collections import OrderedDict
 from typing import Any, Optional
@@ -35,11 +40,48 @@ from .constants import HERMES_HOME, PLUGIN_VERSION, PROTOCOL_VERSION
 logger = logging.getLogger(__name__)
 
 _AWAKE_FLAG = HERMES_HOME / "mobile-awake.state"
+_AWAKE_PID = HERMES_HOME / "mobile-awake.pid"
 _DIAG_DIR = HERMES_HOME / "mobile-logs" / "diag"
 
 
-def _wake_lock_bin() -> Optional[str]:
-    return shutil.which("termux-wake-lock")
+# ── Keep-awake backends (one per host OS) ───────────────────────────────
+# The app's "Keep Computer Awake" toggle reaches a host that is usually a real
+# computer (mac/linux/windows) or a Termux/Android phone. We pick the native
+# mechanism and degrade honestly (awake_mechanism=null, POST->501) when the
+# host has none:
+#
+#   termux-wake-lock  Termux/Android — fire-and-forget; the Termux service
+#                     persists the lock across restarts.
+#   caffeinate        macOS — a background `caffeinate -di` child (display +
+#                     idle sleep), terminated on toggle-off or gateway restart.
+#   power-request     Windows — SetThreadExecutionState() via ctypes, held by
+#                     the gateway process and re-asserted on restart.
+#   systemd-inhibit   Linux — an idle inhibitor held by a background
+#                     `systemd-inhibit ... sleep infinity` child.
+
+_awake_proc: Optional[subprocess.Popen] = None  # caffeinate / systemd-inhibit
+# Serializes acquire/release across the route (worker thread), the Windows
+# inline call (loop thread) and the startup re-acquire thread, so the
+# idempotency check can't be passed twice and spawn a duplicate helper.
+_AWAKE_LOCK = threading.Lock()
+
+
+def _is_termux() -> bool:
+    return shutil.which("termux-wake-lock") is not None
+
+
+def _mechanism() -> Optional[str]:
+    """Best keep-awake mechanism available on this host, or None (degraded)."""
+    if _is_termux():
+        return "termux-wake-lock"
+    sysname = platform.system()
+    if sysname == "Darwin":
+        return "caffeinate" if shutil.which("caffeinate") else None
+    if sysname == "Windows":
+        return "power-request" if hasattr(ctypes, "windll") else None
+    if sysname == "Linux":
+        return "systemd-inhibit" if shutil.which("systemd-inhibit") else None
+    return None
 
 
 def _read_awake_state() -> bool:
@@ -49,19 +91,287 @@ def _read_awake_state() -> bool:
         return False
 
 
+def _spawn_background(cmd: list) -> subprocess.Popen:
+    """Start a long-lived keep-awake helper that dies WITH the gateway.
+
+    No start_new_session: on a restart the child is reaped and
+    _ensure_awake_on_startup() re-spawns it if the state flag still says on.
+    """
+    return subprocess.Popen(
+        cmd,
+        stdin=subprocess.DEVNULL,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+    )
+
+
+def _pid_command(pid: int) -> list:
+    """Best-effort argv tokens for a PID ([] if unknown) — used to confirm a
+    recorded helper is really ours before we kill it. `ps -ww` avoids the
+    default column truncation that would otherwise mangle the command."""
+    try:
+        with open("/proc/%d/cmdline" % pid, "rb") as fh:
+            return fh.read().split(b"\x00")
+    except OSError:
+        pass
+    try:
+        out = subprocess.run(
+            ["ps", "-ww", "-p", str(pid), "-o", "command="],
+            capture_output=True, text=True, timeout=5,
+        )
+        return out.stdout.strip().split()
+    except (OSError, subprocess.SubprocessError):
+        return []
+
+
+def _is_our_helper(argv: list) -> bool:
+    """True only when argv looks exactly like a helper we spawned.
+
+    A bare substring match would SIGTERM a user's own `caffeinate -u -t 3600`
+    or unrelated `systemd-inhibit` run. We require argv[0]'s basename to be
+    our binary AND our own marker to be present.
+    """
+    if not argv:
+        return False
+    exe = os.path.basename(argv[0].decode(errors="replace") if isinstance(argv[0], bytes) else str(argv[0]))
+    if exe == "caffeinate":
+        tokens = [t.decode(errors="replace") if isinstance(t, bytes) else str(t) for t in argv[1:]]
+        # Our helper is always `caffeinate -di -w <gateway-pid>`; a bare user
+        # `caffeinate -di` (no -w) must never be mistaken for it and killed.
+        return "-di" in tokens and "-w" in tokens
+    if exe == "systemd-inhibit":
+        joined = " ".join(t.decode(errors="replace") if isinstance(t, bytes) else str(t) for t in argv)
+        return "hermes-mobile" in joined
+    return False
+
+
+def _reap_tracked_helper() -> None:
+    """Terminate a keep-awake helper a previous gateway process orphaned.
+
+    A fresh process cannot see the old child, so without this a re-acquire on
+    startup would spawn a second helper and they'd accumulate. We only touch a
+    PID we wrote to _AWAKE_PID and verify its command line first, so a recycled
+    PID is never killed.
+    """
+    try:
+        pid = int(_AWAKE_PID.read_text(encoding="utf-8").strip())
+    except (OSError, ValueError):
+        return
+    if pid <= 1:
+        # 0 = our own process group, -1 = every signalable process: a corrupt
+        # or truncated pidfile must never signal anything.
+        _AWAKE_PID.unlink(missing_ok=True)
+        return
+    argv = _pid_command(pid)
+    if not _is_our_helper(argv):
+        return
+    try:
+        os.kill(pid, signal.SIGTERM)
+    except ProcessLookupError:
+        pass
+    except PermissionError:
+        logger.warning("could not signal keep-awake helper pid %d", pid)
+    try:
+        _AWAKE_PID.unlink(missing_ok=True)
+    except OSError:
+        pass
+
+
+def _record_helper_pid(proc: "subprocess.Popen") -> None:
+    try:
+        _AWAKE_PID.write_text(str(proc.pid), encoding="utf-8")
+    except OSError:
+        pass
+
+
+def _check_cmd(binary: str) -> None:
+    """Run a short keep-awake helper (termux-wake-lock/-unlock), raise on fail."""
+    proc = subprocess.run(
+        [binary],
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.PIPE,
+        timeout=15,
+        text=True,
+    )
+    if proc.returncode != 0:
+        raise RuntimeError(f"{binary} exited {proc.returncode}")
+
+
+def _win32_power(on: bool) -> None:
+    """Assert/release the Windows system-required power request via ctypes."""
+    if not hasattr(ctypes, "windll"):
+        raise RuntimeError("Windows power API unavailable")
+    ES_CONTINUOUS = 0x80000000
+    ES_SYSTEM_REQUIRED = 0x00000001
+    ES_DISPLAY_REQUIRED = 0x00000002
+    kernel32 = getattr(ctypes, "windll").kernel32
+    kernel32.SetThreadExecutionState.argtypes = [ctypes.c_uint32]
+    kernel32.SetThreadExecutionState.restype = ctypes.c_uint32
+    kernel32.GetThreadExecutionState.restype = ctypes.c_uint32
+    if on:
+        kernel32.SetThreadExecutionState(
+            ES_CONTINUOUS | ES_SYSTEM_REQUIRED | ES_DISPLAY_REQUIRED
+        )
+        if not kernel32.GetThreadExecutionState() & ES_SYSTEM_REQUIRED:
+            raise RuntimeError("failed to assert Windows wake request")
+    else:
+        kernel32.SetThreadExecutionState(ES_CONTINUOUS)  # release all
+
+
+def _verify_helper_alive(proc: "subprocess.Popen", name: str) -> None:
+    """Confirm a freshly spawned helper is still running, else fail.
+
+    `systemd-inhibit` in particular exits at once when it cannot reach the
+    bus or polkit denies the inhibitor (headless/SSH Linux, WSL2 without
+    systemd) — a successful Popen alone is not proof the lock is held. Runs in
+    a worker thread (route) / the startup thread, so this sleep never blocks
+    the event loop.
+    """
+    time.sleep(0.3)
+    if proc.poll() is not None:
+        try:
+            _AWAKE_PID.unlink(missing_ok=True)
+        except OSError:
+            pass
+        raise RuntimeError(
+            f"{name} exited immediately ({proc.returncode}) — keep-awake unavailable on this host"
+        )
+
+
+def _acquire(mechanism: str) -> None:
+    """Turn host keep-awake ON. Raises RuntimeError on failure."""
+    global _awake_proc
+    with _AWAKE_LOCK:
+        if mechanism == "termux-wake-lock":
+            _check_cmd("termux-wake-lock")
+        elif mechanism == "caffeinate":
+            if _awake_proc is not None and _awake_proc.poll() is None:
+                return  # helper already running — idempotent, don't double-spawn
+            _reap_tracked_helper()
+            # -w <gateway-pid>: caffeinate exits when the gateway dies, so a
+            # normal stop can't orphan the helper; -w is also the distinctive
+            # marker _is_our_helper matches (a bare user `caffeinate -di` won't).
+            _awake_proc = _spawn_background(["caffeinate", "-di", "-w", str(os.getpid())])
+            _record_helper_pid(_awake_proc)
+            _verify_helper_alive(_awake_proc, "caffeinate")
+        elif mechanism == "systemd-inhibit":
+            if _awake_proc is not None and _awake_proc.poll() is None:
+                return
+            _reap_tracked_helper()
+            _awake_proc = _spawn_background(
+                [
+                    "systemd-inhibit",
+                    "--what", "idle",
+                    "--who", "hermes-mobile",
+                    "--why", "Hermes mobile keep-awake",
+                    "--mode", "block",
+                    "sleep", "infinity",
+                ]
+            )
+            _record_helper_pid(_awake_proc)
+            _verify_helper_alive(_awake_proc, "systemd-inhibit")
+        elif mechanism == "power-request":
+            _win32_power(True)
+        else:
+            raise RuntimeError(f"unknown keep-awake mechanism {mechanism!r}")
+
+
+def _release(mechanism: str) -> None:
+    """Turn host keep-awake OFF."""
+    global _awake_proc
+    with _AWAKE_LOCK:
+        if mechanism == "termux-wake-lock":
+            _check_cmd("termux-wake-unlock")
+        elif mechanism in ("caffeinate", "systemd-inhibit"):
+            if _awake_proc is not None:
+                _awake_proc.terminate()
+                try:
+                    _awake_proc.wait(timeout=5)
+                except subprocess.TimeoutExpired:
+                    _awake_proc.kill()
+                    _awake_proc.wait(timeout=5)
+                _awake_proc = None
+            else:
+                # Fresh process: we can't terminate the old child, but a
+                # recorded orphan from the previous gateway can still be
+                # reaped by pid.
+                _reap_tracked_helper()
+            try:
+                _AWAKE_PID.unlink(missing_ok=True)
+            except OSError:
+                pass
+        elif mechanism == "power-request":
+            _win32_power(False)
+
+
+def _apply_subprocess(awake: bool, mechanism: str) -> None:
+    """Apply keep-awake for the subprocess backends. Runs in a worker thread
+    (the route wraps it in asyncio.to_thread) so subprocess.run / Popen.wait
+    never block the aiohttp event loop. termux, caffeinate and
+    systemd-inhibit all use this; only the Windows ctypes path stays inline
+    (it must be asserted and released on the same thread)."""
+    if awake:
+        _acquire(mechanism)
+    else:
+        _release(mechanism)
+
+
+def _ensure_awake_on_startup() -> None:
+    """Re-establish keep-awake a previous gateway process left ON.
+
+    The state flag is persisted across restarts, so a previously-ON toggle is
+    honored on boot and the reap+spawn reconciles any orphan.
+
+    - The Windows power-request is asserted inline on the calling (main)
+      thread: the execution state is thread-affine (ES_CONTINUOUS) and would
+      die with a short-lived worker thread, so it must be held by the
+      long-lived main thread.
+    - The subprocess backends' blocking ps look-up + spawn run in a daemon
+      thread so they never block the event loop or register() at startup.
+    """
+    mechanism = _mechanism()
+    if mechanism is None or not _read_awake_state():
+        return
+    if mechanism == "power-request":
+        _startup_reacquire(mechanism)  # inline: main thread, fast syscall
+        return
+    threading.Thread(
+        target=_startup_reacquire, args=(mechanism,), daemon=True
+    ).start()
+
+
+def _startup_reacquire(mechanism: str) -> None:
+    try:
+        _acquire(mechanism)
+        logger.info("keep-awake re-acquired on startup (%s)", mechanism)
+    except Exception as exc:  # startup is best-effort; never block registration
+        logger.warning("could not re-acquire keep-awake on startup: %s", exc)
+
+
 @require_key
 async def _system_status_route(request: web.Request) -> web.Response:
     """GET /api/system/status — gated like every other route: it reports
     plugin version, OS and keep-awake state, which a LAN/VPN neighbor has
     no business enumerating. The app's interceptor always sends the key."""
+    mechanism = _mechanism()
+    awake = _read_awake_state() if mechanism else False
+    # If we hold an in-process helper that has since died, the persisted flag
+    # is stale — report off AND self-heal the flag so a later restart doesn't
+    # silently re-arm keep-awake after the UI already showed it off.
+    if awake and _awake_proc is not None and _awake_proc.poll() is not None:
+        awake = False
+        try:
+            _AWAKE_FLAG.write_text("off", encoding="utf-8")
+        except OSError:
+            pass
     return _json_response(
         {
             "ok": True,
             "os": platform.system(),
-            "platform": "termux" if _wake_lock_bin() else platform.system().lower(),
+            "platform": "termux" if _is_termux() else platform.system().lower(),
             "python": sys.version.split()[0],
-            "awake": _read_awake_state() if _wake_lock_bin() else False,
-            "awake_mechanism": "termux-wake-lock" if _wake_lock_bin() else None,
+            "awake": awake,
+            "awake_mechanism": mechanism,
             "plugin_version": PLUGIN_VERSION,
             "plugin_protocol": PROTOCOL_VERSION,
         }
@@ -70,25 +380,29 @@ async def _system_status_route(request: web.Request) -> web.Response:
 
 @require_key
 async def _system_awake_route(request: web.Request) -> web.Response:
-    """POST /api/system/awake {awake: bool}"""
+    """POST /api/system/awake {awake: bool} -> {ok, awake, mechanism}."""
     try:
         payload = await _read_json(request)
     except Exception as exc:  # AudioBackendError also lands here
         return _json_response({"ok": False, "error": str(exc)}, status=400)
 
     awake = bool(payload.get("awake"))
-    if not _wake_lock_bin():
+    mechanism = _mechanism()
+    if mechanism is None:
         return _json_response(
             {"ok": False, "error": "keep-awake not supported on this host"},
             status=501,
         )
-    binary = "termux-wake-lock" if awake else "termux-wake-unlock"
     try:
-        proc = await _run(binary)
-        if proc.returncode != 0:
-            return _json_response(
-                {"ok": False, "error": f"{binary} exited {proc.returncode}"}, status=500
-            )
+        if mechanism == "power-request":
+            # Inline on the loop thread (thread affinity), under the lock so a
+            # POST can't race the startup re-acquire on the main thread.
+            with _AWAKE_LOCK:
+                _win32_power(awake)
+        else:
+            # Subprocess backends: run off the event loop so a slow
+            # subprocess.run / Popen.wait / ps never wedges all requests.
+            await asyncio.to_thread(_apply_subprocess, awake, mechanism)
     except Exception as exc:
         return _json_response({"ok": False, "error": str(exc)}, status=500)
 
@@ -96,21 +410,8 @@ async def _system_awake_route(request: web.Request) -> web.Response:
         _AWAKE_FLAG.write_text("on" if awake else "off", encoding="utf-8")
     except OSError:
         pass
-    logger.info("mobile keep-awake -> %s (%s)", "ON" if awake else "OFF", binary)
-    return _json_response({"ok": True, "awake": awake, "mechanism": "termux-wake-lock"})
-
-
-async def _run(binary: str) -> Any:
-    proc = await asyncio.create_subprocess_exec(
-        binary, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE
-    )
-    try:
-        await asyncio.wait_for(proc.communicate(), timeout=10)
-    except asyncio.TimeoutError:
-        proc.kill()
-        await proc.communicate()
-        raise RuntimeError(f"{binary} timed out after 10s")
-    return proc
+    logger.info("mobile keep-awake -> %s (%s)", "ON" if awake else "OFF", mechanism)
+    return _json_response({"ok": True, "awake": awake, "mechanism": mechanism})
 
 
 @require_key
@@ -431,6 +732,7 @@ async def _serve_file_route(request: web.Request) -> web.Response:
 
 def register(native_app: web.Application) -> None:
     """Attach system/diag routes to the api_server's web.Application."""
+    _ensure_awake_on_startup()
     native_app.router.add_get("/api/system/status", _system_status_route)
     native_app.router.add_post("/api/system/awake", _system_awake_route)
     native_app.router.add_post("/api/diag/log", _diag_route)
