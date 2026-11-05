@@ -91,9 +91,10 @@ def test_new_signature_forwards_include_editorial(monkeypatch):
 async def test_route_returns_manifest_shape(fresh_cache, monkeypatch):
     monkeypatch.setattr(
         skills_routes, "_list_skills",
-        lambda: [{"name": "a", "description": "d1", "category": "c"},
-                 {"name": "", "description": "dropped — blank name", "category": "c"}],
+        lambda including_disabled=False: [{"name": "a", "description": "d1", "category": "c"},
+                                           {"name": "", "description": "dropped — blank name", "category": "c"}],
     )
+    monkeypatch.setattr(skills_routes, "_disabled_names", lambda: set())
 
     class FakeQuery(dict):
         pass
@@ -103,8 +104,8 @@ async def test_route_returns_manifest_shape(fresh_cache, monkeypatch):
 
     route = getattr(skills_routes._skills_route, "__wrapped__", skills_routes._skills_route)
 
-    async def fake_to_thread(fn):
-        return fn()
+    async def fake_to_thread(fn, *args, **kwargs):
+        return fn(*args, **kwargs)
 
     monkeypatch.setattr(skills_routes.asyncio, "to_thread", fake_to_thread)
     resp = await route(FakeReq())
@@ -112,18 +113,20 @@ async def test_route_returns_manifest_shape(fresh_cache, monkeypatch):
     body = json.loads(resp.body)
     assert body["ok"] is True
     assert body["count"] == 1
-    assert body["skills"] == [{"name": "a", "description": "d1", "category": "c"}]
+    # 'enabled' reflects the (patched-empty) disabled set: skill "a" is enabled.
+    assert body["skills"] == [{"name": "a", "description": "d1", "category": "c", "enabled": True}]
 
 
 @pytest.mark.asyncio
 async def test_second_hit_serves_cache_without_rebuild(fresh_cache, monkeypatch):
     builds = []
 
-    def fake_list_skills():
+    def fake_list_skills(including_disabled=False):
         builds.append(1)
         return []
 
     monkeypatch.setattr(skills_routes, "_list_skills", fake_list_skills)
+    monkeypatch.setattr(skills_routes, "_disabled_names", lambda: set())
 
     class FakeQuery(dict):
         pass
@@ -133,8 +136,8 @@ async def test_second_hit_serves_cache_without_rebuild(fresh_cache, monkeypatch)
 
     route = getattr(skills_routes._skills_route, "__wrapped__", skills_routes._skills_route)
 
-    async def fake_to_thread(fn):
-        return fn()
+    async def fake_to_thread(fn, *args, **kwargs):
+        return fn(*args, **kwargs)
 
     monkeypatch.setattr(skills_routes.asyncio, "to_thread", fake_to_thread)
 
@@ -164,7 +167,7 @@ async def test_enumeration_failure_reports_500_not_silent_empty(fresh_cache, mon
     """A crash must surface as {ok: false} 500 — the app distinguishes
     'failed to load' from 'genuinely zero skills' on that."""
 
-    def boom():
+    def boom(*args, **kwargs):
         raise RuntimeError("skills dir unreadable")
 
     monkeypatch.setattr(skills_routes, "_list_skills", boom)
@@ -177,8 +180,8 @@ async def test_enumeration_failure_reports_500_not_silent_empty(fresh_cache, mon
 
     route = getattr(skills_routes._skills_route, "__wrapped__", skills_routes._skills_route)
 
-    async def fake_to_thread(fn):
-        return fn()
+    async def fake_to_thread(fn, *args, **kwargs):
+        return fn(*args, **kwargs)
 
     monkeypatch.setattr(skills_routes.asyncio, "to_thread", fake_to_thread)
     resp = await route(FakeReq())
