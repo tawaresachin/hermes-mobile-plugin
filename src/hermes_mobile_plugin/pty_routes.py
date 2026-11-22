@@ -51,10 +51,12 @@ from __future__ import annotations
 import asyncio
 import base64
 import fcntl
+import getpass
 import json
 import logging
 import os
 import signal
+import socket
 import struct
 import termios
 import time
@@ -123,6 +125,28 @@ def _authorized_ws(request: web.Request) -> bool:
     posture as the rest of the mobile routes; unresolvable = closed)."""
     from .audio_routes import _authorized
     return _authorized(request)
+
+
+async def _pty_info_route(request: web.Request) -> web.Response:
+    """GET /api/mobile/pty/info — live identity of the gateway that owns the
+    PTY. Every value is resolved on THIS request; nothing is pinned at import.
+
+    ``hermes_home`` and ``cwd`` deliberately come from the same resolver the
+    spawn uses (``_hermes_cwd``), so the path shown in the mobile header is
+    byte-for-byte the directory the shell starts in.
+    """
+    from .audio_routes import _authorized, _unauthorized
+
+    if not _authorized(request):
+        return _unauthorized()
+    cwd = _hermes_cwd()
+    return web.json_response({
+        "ok": True,
+        "user": getpass.getuser(),
+        "host": socket.gethostname(),
+        "hermes_home": str(cwd),
+        "cwd": str(cwd),
+    })
 
 
 class _PtySession:
@@ -405,4 +429,5 @@ def register(native_app: web.Application) -> None:
     if router is None:
         raise RuntimeError("mobile pty: api_server app not available")
     router.add_get("/api/mobile/pty/ws", _pty_ws_route)
+    router.add_get("/api/mobile/pty/info", _pty_info_route)
     logger.info("hermes-mobile-plugin: PTY bridge mounted")

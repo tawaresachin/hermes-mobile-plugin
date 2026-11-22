@@ -8,14 +8,44 @@ here asserts a particular user, host or path string in the product source.
 
 from __future__ import annotations
 
+import getpass
 import os
 import pty
 import select
+import socket
 import sys
 from pathlib import Path
 from types import SimpleNamespace
 
+import pytest
+from aiohttp import web
+from aiohttp.test_utils import TestClient, TestServer
+
 from hermes_mobile_plugin import pty_routes
+
+AUTH = {"Authorization": "Bearer test-key"}
+
+
+class _Adapter:
+    """Minimal api_server adapter: the same auth source the live gateway uses."""
+
+    def __init__(self, key="test-key", *, raises=False):
+        self.key = key
+        self.raises = raises
+
+    def _expected_api_key(self):
+        if self.raises:
+            raise RuntimeError("key store unavailable")
+        return self.key
+
+
+async def _client(adapter=None):
+    app = web.Application()
+    app["api_server_adapter"] = adapter or _Adapter()
+    pty_routes.register(app)
+    client = TestClient(TestServer(app))
+    await client.start_server()
+    return client
 
 
 def _no_agent_constants(monkeypatch) -> None:
@@ -138,6 +168,69 @@ def test_spawned_process_default_dir_is_runtime_home(monkeypatch, tmp_path) -> N
                     os.close(fd)
                 except OSError:
                     pass
+
+
+@pytest.mark.asyncio
+async def test_pty_info_requires_bearer_key() -> None:
+    """The info route is gated like every other /api/mobile/* route."""
+    client = await _client(_Adapter(key="test-key"))
+    try:
+        for headers in ({}, {"Authorization": "Bearer wrong-key"}):
+            resp = await client.get("/api/mobile/pty/info", headers=headers)
+            assert resp.status == 401
+            assert (await resp.json())["error"] == "unauthorized"
+        resp = await client.get("/api/mobile/pty/info", headers=AUTH)
+        assert resp.status == 200
+        assert (await resp.json())["ok"] is True
+    finally:
+        await client.close()
+
+
+@pytest.mark.asyncio
+async def test_pty_info_fails_closed_when_key_unresolvable() -> None:
+    """An unresolved key is not a keyless gateway — refuse the request."""
+    client = await _client(_Adapter(raises=True))
+    try:
+        resp = await client.get("/api/mobile/pty/info")
+        assert resp.status == 401
+        assert (await resp.json())["error"] == "unauthorized"
+    finally:
+        await client.close()
+
+
+@pytest.mark.asyncio
+async def test_pty_info_follows_temp_home_env(monkeypatch, tmp_path) -> None:
+    """hermes_home and cwd follow a temporary HERMES_HOME, with live identity."""
+    _no_agent_constants(monkeypatch)
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    client = await _client()
+    try:
+        resp = await client.get("/api/mobile/pty/info", headers=AUTH)
+        assert resp.status == 200
+        body = await resp.json()
+        assert body["ok"] is True
+        assert body["user"] == getpass.getuser()
+        assert body["host"] == socket.gethostname()
+        assert body["hermes_home"] == str(tmp_path)
+        assert body["cwd"] == str(tmp_path)
+        # The reported cwd is the very path the spawn would receive.
+        assert body["cwd"] == str(pty_routes._hermes_cwd())
+    finally:
+        await client.close()
+
+
+@pytest.mark.asyncio
+async def test_pty_info_resolves_on_every_request(monkeypatch, tmp_path) -> None:
+    """Two calls with a changed resolver return two different paths."""
+    _no_agent_constants(monkeypatch)
+    client = await _client()
+    try:
+        for name in ("first-home", "second-home"):
+            monkeypatch.setenv("HERMES_HOME", str(tmp_path / name))
+            resp = await client.get("/api/mobile/pty/info", headers=AUTH)
+            assert (await resp.json())["cwd"] == str(tmp_path / name)
+    finally:
+        await client.close()
 
 
 def test_source_has_no_hardcoded_identity_or_synthetic_prompt() -> None:
