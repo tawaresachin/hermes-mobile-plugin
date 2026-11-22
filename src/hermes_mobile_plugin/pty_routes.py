@@ -58,6 +58,7 @@ import signal
 import struct
 import termios
 import time
+from pathlib import Path
 from typing import Any, Dict, Optional, Set
 
 from aiohttp import web, WSMsgType
@@ -67,7 +68,7 @@ logger = logging.getLogger(__name__)
 MAX_PTY_SESSIONS = 3
 MAX_FRAME_BYTES = 256 * 1024        # one client frame: generous, not infinite
 _CHILD_KEEP_ENV = ("PATH", "HOME", "USER", "LOGNAME", "SHELL",
-                   "TERM", "LANG", "LC_ALL", "TZ")
+                   "TERM", "LANG", "TZ")
 _FORBIDDEN_ENV_MARKERS = ("KEY", "TOKEN", "SECRET", "PASSWORD", "PRIVATE")
 
 _live_sessions: Set[str] = set()
@@ -82,7 +83,9 @@ def _clean_child_env() -> Dict[str, str]:
     """Minimal env for the spawned shell: no gateway credentials."""
     env: Dict[str, str] = {}
     for k, v in os.environ.items():
-        if k in _CHILD_KEEP_ENV:
+        # LANG / every LC_* stay: they render the real user's locale, not
+        # secrets. The forbidden-marker filter still applies to the rest.
+        if k in _CHILD_KEEP_ENV or k.startswith("LC_"):
             env[k] = v
         else:
             ku = k.upper()
@@ -93,6 +96,26 @@ def _clean_child_env() -> Dict[str, str]:
                 env[k] = v
     env.setdefault("TERM", "xterm-256color")
     return env
+
+
+def _hermes_cwd() -> Path:
+    """Connected gateway's Hermes home, resolved when a shell is spawned.
+
+    The module-level ``constants.HERMES_HOME`` is pinned at import time;
+    using it here would leave a shell in a stale directory whenever
+    HERMES_HOME or the active profile changed after import. The resolver
+    reads the live context on every call. Standalone/test use falls back
+    to HERMES_HOME, then ~/.hermes. No prompt text is ever synthesised.
+    """
+    try:
+        from hermes_constants import get_hermes_home
+        return Path(get_hermes_home())
+    except Exception:  # noqa: BLE001, S110 - standalone gateway-less use
+        pass
+    env_home = os.environ.get("HERMES_HOME", "").strip()
+    if env_home:
+        return Path(env_home).expanduser()
+    return Path.home() / ".hermes"
 
 
 def _authorized_ws(request: web.Request) -> bool:
@@ -122,7 +145,7 @@ class _PtySession:
         # Popen is a few ms of blocking; acceptable at connect time,
         # and 'ok' must not go out before the child actually exists.
         self.proc = _fork_shell(shell, self.slave, self.cols, self.rows,
-                                _clean_child_env())
+                                _clean_child_env(), _hermes_cwd())
         os.close(self.slave)  # parent keeps only master + the child's copy
         self.slave = self.master  # stdin writes go to the master side
 
@@ -166,8 +189,8 @@ class _PtySession:
 
 
 def _fork_shell(shell: str, slave_fd: int, cols: int, rows: int,
-                env: Dict[str, str]):
-    """Spawn the child in its own process group, stdio -> pty."""
+                env: Dict[str, str], cwd: Path):
+    """Spawn the child in its own process group, stdio -> pty, at cwd."""
     import subprocess
 
     def _prep():
@@ -181,6 +204,7 @@ def _fork_shell(shell: str, slave_fd: int, cols: int, rows: int,
         stdout=slave_fd,
         stderr=slave_fd,
         env=env,
+        cwd=str(cwd),
         preexec_fn=_prep,
         close_fds=True,
     )
