@@ -1,5 +1,15 @@
 # Hermes Mobile QR Plugin
 
+## 0.0.42 — profile routes follow core semantics
+
+The mobile agent-profile and capability routes now ship in the wheel and
+delegate profile state to `hermes_cli.profiles`: create/delete/set-active/
+get-active and metadata use the core API off the event loop with a timeout,
+profile paths are contained under the Hermes home, the active profile cannot
+be deleted, and only model/provider are merged into a new profile config.
+MCP capability responses now return `env_keys`/`header_keys` instead of secret
+values. Blocking profile I/O no longer stalls the aiohttp loop.
+
 ## 0.0.37 — the QR shows itself, and the docs say where it lives
 
 Three gaps reported from the app's pairing instructions:

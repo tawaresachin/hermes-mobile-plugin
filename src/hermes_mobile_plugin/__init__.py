@@ -73,7 +73,7 @@ class HermesMobileQRPlugin:
             ensure_running()
             logger.info("[Hermes Mobile Plugin] Gateway watchdog verified/spawned")
 
-        except Exception as e:
+        except Exception as e:  # noqa: BLE001 - legacy startup is best-effort
             logger.warning("[Hermes Mobile Plugin] Failed to initialize: %s", e)
 
 # ---------------------------------------------------------------------------
@@ -103,14 +103,18 @@ def _wire_audio_routes(native: Any, adapter: Any) -> None:
             logger.debug("[hermes-mobile-plugin] Audio routes already registered on this app; skipping")
             return
         try:
+            from .agent_profiles_routes import (
+                register as _register_agent_profiles_routes,
+            )
             from .audio_routes import register as _register_routes
-            from .system_routes import register as _register_system_routes
+            from .capabilities_routes import register as _register_capabilities_routes
             from .commands_routes import register as _register_command_routes
-            from .skills_routes import register as _register_skills_routes
-            from .update_routes import register as _register_update_routes
             from .providers_routes import register as _register_providers_routes
             from .pty_routes import register as _register_pty_routes
-        except Exception as exc:
+            from .skills_routes import register as _register_skills_routes
+            from .system_routes import register as _register_system_routes
+            from .update_routes import register as _register_update_routes
+        except Exception as exc:  # noqa: BLE001 - one bad route must not drop all routes
             logger.warning(
                 "[hermes-mobile-plugin] Could not import route modules: %s", exc
             )
@@ -129,10 +133,10 @@ def _wire_audio_routes(native: Any, adapter: Any) -> None:
             _register_update_routes(native)
             _register_providers_routes(native)
             _register_pty_routes(native)
-        except Exception as exc:
-            logger.exception(
-                "[hermes-mobile-plugin] Failed to register audio routes: %s", exc
-            )
+            _register_agent_profiles_routes(native)
+            _register_capabilities_routes(native)
+        except Exception:
+            logger.exception("[hermes-mobile-plugin] Failed to register audio routes")
             return
         if native is not None:
             _audio_wired_apps.add(native)
@@ -147,7 +151,7 @@ async def _maybe_generate_qr(ctx: Any) -> None:
     (never the gateway's CWD).
     """
     try:
-        from .config import load_hermes_config, get_plugin_config
+        from .config import get_plugin_config, load_hermes_config
         hermes_config = load_hermes_config()
         plugin_config = get_plugin_config(hermes_config)
     except Exception as exc:  # noqa: BLE001 — a bad/unimportable config must not 500 startup
@@ -163,7 +167,7 @@ async def _maybe_generate_qr(ctx: Any) -> None:
         out_dir = Path(ctx.plugin_dir) if getattr(ctx, "plugin_dir", None) else PLUGIN_DIR
         await generate_qr(hermes_config, out_dir)
         logger.info("[Hermes Mobile Plugin] QR code generated via register(ctx)")
-    except Exception as exc:
+    except Exception as exc:  # noqa: BLE001 - QR generation is optional
         logger.warning("[Hermes Mobile Plugin] QR generation skipped: %s", exc)
 
 
@@ -180,7 +184,7 @@ def register(ctx: Any) -> None:
     # Register the api_server handler — always safe (idempotent guard).
     try:
         ctx.register_platform_handler("api_server", _wire_audio_routes)
-    except Exception as exc:
+    except Exception as exc:  # noqa: BLE001 - plugin load must survive handler failure
         logger.warning(
             "[Hermes Mobile Plugin] Could not register api_server handler: %s", exc
         )
@@ -191,7 +195,7 @@ def register(ctx: Any) -> None:
     try:
         from .supervisor import ensure_running
         ensure_running()
-    except Exception as exc:
+    except Exception as exc:  # noqa: BLE001 - watchdog is optional
         logger.warning("[Hermes Mobile Plugin] Watchdog spawn failed: %s", exc)
 
     # Fire-and-forget QR generation so we don't block loader. Scheduling
