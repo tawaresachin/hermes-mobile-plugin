@@ -160,6 +160,11 @@ SUPERVISOR_LOG_FILE: Final[Path] = LOGS_DIR / "gateway_supervisor.log"
 SUPERVISOR_PID_FILE: Final[Path] = LOGS_DIR / "gateway_supervisor.pid"
 QR_HTML_FILE: Final[str] = "qr_code.html"
 
+# Live pairing page served by the gateway api_server. The file
+# (qr_code.html) is for headless/offline; /pair is the per-request-rendered,
+# loopback-only page the browser flow opens against a healthy gateway.
+PAIR_PATH: Final[str] = "/pair"
+
 # Attachment uploads served to the mobile app
 UPLOADS_DIR: Final[Path] = HERMES_HOME / "mobile-uploads"
 

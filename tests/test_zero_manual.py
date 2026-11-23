@@ -625,7 +625,8 @@ class TestInstallRestart:
         monkeypatch.setattr(cli, "_wait_for_health", lambda port, timeout_s: True)
         # Never launch a real browser from the test suite.
         monkeypatch.setattr(cli, "_desktop_session", lambda: True)
-        monkeypatch.setattr(cli, "_open_qr_page", lambda path: True)
+        monkeypatch.setattr(cli, "pair_page_url", lambda port: f"http://127.0.0.1:{port}/pair")
+        monkeypatch.setattr(cli, "_open_pair_page", lambda port: True)
         return killed
 
     def test_unchanged_run_leaves_a_healthy_gateway_running(self, monkeypatch, capsys):
@@ -673,20 +674,20 @@ class TestInstallRestart:
 
         opened = []
         self._patch(monkeypatch, seeded=False)
-        monkeypatch.setattr(cli, "_open_qr_page",
-                            lambda path: (opened.append(str(path)), True)[1])
+        monkeypatch.setattr(cli, "_open_pair_page",
+                            lambda port: (opened.append(port), True)[1])
 
         assert cli.cmd_install(argparse.Namespace()) == 0
-        assert opened == ["qr.html"]
-        assert "Opening the QR page" in capsys.readouterr().out
+        assert opened == [8642]
+        assert "Opening the live pairing page" in capsys.readouterr().out
 
     def test_no_browser_flag_skips_the_qr_page(self, monkeypatch, capsys):
         from hermes_mobile_plugin import cli
 
         opened = []
         self._patch(monkeypatch, seeded=False)
-        monkeypatch.setattr(cli, "_open_qr_page",
-                            lambda path: (opened.append(str(path)), True)[1])
+        monkeypatch.setattr(cli, "_open_pair_page",
+                            lambda port: (opened.append(port), True)[1])
 
         assert cli.cmd_install(argparse.Namespace(no_browser=True)) == 0
         assert opened == []
@@ -699,8 +700,8 @@ class TestInstallRestart:
         opened = []
         self._patch(monkeypatch, seeded=False)
         monkeypatch.setattr(cli, "_desktop_session", lambda: False)
-        monkeypatch.setattr(cli, "_open_qr_page",
-                            lambda path: (opened.append(str(path)), True)[1])
+        monkeypatch.setattr(cli, "_open_pair_page",
+                            lambda port: (opened.append(port), True)[1])
 
         assert cli.cmd_install(argparse.Namespace()) == 0
         assert opened == []

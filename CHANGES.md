@@ -1,5 +1,21 @@
 # Hermes Mobile QR Plugin
 
+## 0.0.44 — live loopback-only pairing page (`GET /pair`)
+
+Round 15 — pairing CX hardening, small and safe.
+
+- New `GET /pair` on the gateway `api_server` renders the SAME pairing HTML
+  as `qr_code.html`, generated per request from the current reachable address
+  (reuses the 0.0.43 candidate/primary logic, so no dead Tailscale address is
+  ever advertised). Because the page embeds the API key it must stay
+  owner-only, so the route serves loopback callers only
+  (`127.0.0.1` / `::1` via an IP-parse loopback test); any non-loopback caller
+  gets a short 403 and the key is never rendered.
+- `install` and `qr` now open/print `http://127.0.0.1:<port>/pair` when the
+  gateway answers that route; they still write `qr_code.html` for headless /
+  offline use, and keep `--no-browser`. The install summary always prints the
+  live URL when present, else the saved file.
+
 ## 0.0.43 — the pairing QR never advertises a dead address
 
 `tailscale ip -4` keeps printing a 100.x address while the Tailscale backend is

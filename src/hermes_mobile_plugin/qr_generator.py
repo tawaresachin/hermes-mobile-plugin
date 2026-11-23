@@ -265,6 +265,41 @@ def get_html_template(
 </html>"""
 
 
+def render_pairing_html(config: Optional[dict] = None, ip_override: Optional[str] = None) -> str:
+    """Render the pairing page (primary QR + alternate + details) as HTML.
+
+    Single source of truth for the page content: the live ``/pair`` route and
+    the CLI/file flows all go through here, so the QR the phone scans is always
+    the one the gateway just rendered for this request.
+
+    Args:
+        config: Hermes configuration dictionary. If None, loads from default path.
+        ip_override: Force a specific IP address (e.g. Tailscale IP).
+
+    Returns:
+        Complete, self-contained HTML document string.
+
+    Raises:
+        QRConfigError: If the QR code generation fails.
+    """
+    if config is None:
+        config = load_hermes_config()
+
+    data = build_connection_config(config, ip_override=ip_override)
+
+    # Generate the primary QR, plus a clearly labelled alternate when the
+    # host has a second reachable address (e.g. Wi-Fi + running Tailscale).
+    qr_svg = generate_qr_svg(data)
+    alternate_qr_svg = None
+    if len(data.get("candidates", [])) > 1:
+        alt = data["candidates"][1]
+        alternate_qr_svg = generate_qr_svg(
+            data, url=f"http://{alt['ip']}:{data.get('port', 8642)}"
+        )
+
+    return get_html_template(qr_svg, data, alternate_qr_svg=alternate_qr_svg)
+
+
 async def generate_qr(config: Optional[dict] = None, output_dir: Optional[Path] = None,
                       open_browser: bool = True, save_file: bool = True,
                       ip_override: Optional[str] = None) -> Path:
@@ -296,21 +331,8 @@ async def generate_qr(config: Optional[dict] = None, output_dir: Optional[Path] 
 
     output_dir.mkdir(parents=True, exist_ok=True)
 
-    # Build connection config
-    data = build_connection_config(config, ip_override=ip_override)
-
-    # Generate the primary QR, plus a clearly labelled alternate when the
-    # host has a second reachable address (e.g. Wi-Fi + running Tailscale).
-    qr_svg = generate_qr_svg(data)
-    alternate_qr_svg = None
-    if len(data.get("candidates", [])) > 1:
-        alt = data["candidates"][1]
-        alternate_qr_svg = generate_qr_svg(
-            data, url=f"http://{alt['ip']}:{data['port']}"
-        )
-
-    # Generate HTML
-    html = get_html_template(qr_svg, data, alternate_qr_svg=alternate_qr_svg)
+    # Build connection config + HTML via the shared renderer
+    html = render_pairing_html(config, ip_override=ip_override)
 
     # Save file
     output_path = output_dir / QR_HTML_FILE

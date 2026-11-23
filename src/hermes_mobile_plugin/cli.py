@@ -263,10 +263,13 @@ def cmd_install(args: argparse.Namespace) -> int:
 
     # Put the pairing code in front of the human — it is what this run exists
     # for. Opened once, after the last write (a restart rewrites the page).
-    if (qr_path is not None and not getattr(args, "no_browser", False)
-            and _desktop_session()):
-        if _open_qr_page(qr_path):
-            print(f"🌐 Opening the QR page in your browser: {qr_path}")
+    # Live first: when the gateway answers the loopback pairing page, open
+    # that (a freshly rendered, never-stale page). Fall back to the saved
+    # file for headless/offline hosts, or a gateway that has not picked up
+    # the new plugin yet.
+    if qr_path is not None and not getattr(args, "no_browser", False) and _desktop_session():
+        if _open_pair_page(port):
+            print(f"🌐 Opening the live pairing page in your browser: http://127.0.0.1:{port}/pair")
         else:
             print(f"ℹ️  Open this file to see the QR: {qr_path}")
 
@@ -289,6 +292,12 @@ def cmd_install(args: argparse.Namespace) -> int:
     print()
     print(f"🔗 Connection details (port {port}):")
     print_connection_details(config, ip_override=ip_override)
+    print()
+    live_pair_url = pair_page_url(port)
+    if live_pair_url:
+        print(f"🌐 Live pairing page: {live_pair_url}")
+    elif qr_path is not None:
+        print(f"ℹ️  Pairing page not live yet — open this file: {qr_path}")
     print()
     print("📊 Management commands:")
     print("   hermes-mobile-plugin qr          # show the pairing QR again")
@@ -329,10 +338,23 @@ def cmd_qr(args: argparse.Namespace) -> int:
         asyncio.run(generate_qr(
             config,
             output_dir=output_dir,
-            open_browser=not args.no_browser,
+            open_browser=False,  # the live page handles the browser open
             save_file=True,
             ip_override=args.ip,
         ))
+
+        port = resolve_gateway_port()
+        live_url = pair_page_url(port)
+        if live_url and not args.no_browser:
+            if _open_browser_url(live_url):
+                print(f"🌐 Opening the live pairing page in your browser: {live_url}")
+            else:
+                print(f"ℹ️  Open this URL in your browser: {live_url}")
+            print("   (add --no-browser to skip the browser open)")
+        elif live_url:
+            print(f"🌐 Live pairing page: {live_url}")
+        else:
+            print(f"ℹ️  Gateway did not answer /pair yet — open the saved file: {output_path}")
 
         print_connection_details(config, ip_override=args.ip)
         return 0
@@ -474,6 +496,43 @@ def _open_qr_page(path: Path) -> bool:
     try:
         return webbrowser.open(path.absolute().as_uri())
     except Exception:  # noqa: BLE001 - showing a QR must never fail the install
+        return False
+
+
+# ─── Live pairing page (GET /pair, loopback-only) ─────────────────────
+
+_PAIR_TIMEOUT_S = 3.0
+
+
+def pair_page_url(port: int) -> str | None:
+    """``http://127.0.0.1:<port>/pair`` when the gateway answers the live
+    pairing page, else None (fall back to the saved qr_code.html file)."""
+    import urllib.request
+
+    try:
+        with urllib.request.urlopen(
+            f"http://127.0.0.1:{port}/pair", timeout=_PAIR_TIMEOUT_S
+        ) as resp:
+            if resp.status == 200:
+                return f"http://127.0.0.1:{port}/pair"
+    except Exception:  # noqa: BLE001 - a 404 on the page is a fallback, not a crash
+        return None
+    return None
+
+
+def _open_pair_page(port: int) -> bool:
+    """Open the LIVE loopback pairing page in the desktop browser."""
+    url = pair_page_url(port)
+    if not url:
+        return False
+    return _open_browser_url(url)
+
+
+def _open_browser_url(url: str) -> bool:
+    """Open a URL in the desktop browser; never raises."""
+    try:
+        return bool(webbrowser.open(url))
+    except Exception:  # noqa: BLE001 - opening a browser must never crash the CLI
         return False
 
 
