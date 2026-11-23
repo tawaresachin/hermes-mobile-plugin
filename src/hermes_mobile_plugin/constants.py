@@ -166,6 +166,9 @@ UPLOADS_DIR: Final[Path] = HERMES_HOME / "mobile-uploads"
 # Tailscale configuration
 TAILSCALE_IP_PREFIX: Final[str] = "100."
 TAILSCALE_CLI_COMMAND: Final[list[str]] = ["tailscale", "ip", "-4"]
+# `tailscale ip -4` keeps printing the 100.x address while Tailscale is
+# STOPPED. Only `status --json` tells us whether that address is live.
+TAILSCALE_STATUS_COMMAND: Final[list[str]] = ["tailscale", "status", "--json"]
 # Interface dumps scanned for a 100.x address, one per OS family: iproute2
 # (Linux), BSD/macOS ifconfig, Windows ipconfig. Absent commands are skipped,
 # so listing all three is safe on every host — and Windows needs ipconfig:

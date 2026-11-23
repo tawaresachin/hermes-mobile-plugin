@@ -1,5 +1,18 @@
 # Hermes Mobile QR Plugin
 
+## 0.0.43 — the pairing QR never advertises a dead address
+
+`tailscale ip -4` keeps printing a 100.x address while the Tailscale backend is
+`Stopped`, which made the phone scan an unreachable URL. Detection now checks
+`tailscale status --json` and only offers Tailscale when `BackendState` is
+`Running`; the LAN/default-route IPv4 is always offered, and loopback is a
+last-resort candidate with a warning. The page encodes the primary candidate
+in the big QR and, when a second reachable address exists, shows a clearly
+labelled alternate QR ("Same Wi-Fi" / "Tailscale"). The `install` and `qr`
+summaries now print the exact URLs the page encodes, honor `--ip` on both
+commands, and surface the same warnings. Gateway-start auto-generation uses
+the same corrected detection.
+
 ## 0.0.42 — profile routes follow core semantics
 
 The mobile agent-profile and capability routes now ship in the wheel and

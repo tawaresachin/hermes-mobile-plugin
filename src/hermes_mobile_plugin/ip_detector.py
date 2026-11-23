@@ -1,5 +1,12 @@
-"""IP address detection utilities for Hermes Mobile Plugin."""
+"""IP address detection utilities for Hermes Mobile Plugin.
 
+The phone can only pair with an address that is actually reachable. A stopped
+Tailscale daemon still answers ``tailscale ip -4`` with a 100.x address, so that
+output is only trusted when ``tailscale status --json`` says the backend is
+Running. The LAN/default-route address is always offered as a candidate.
+"""
+
+import json
 import logging
 import socket
 import subprocess
@@ -9,9 +16,15 @@ from .constants import (
     NETWORK_COMMANDS,
     TAILSCALE_CLI_COMMAND,
     TAILSCALE_IP_PREFIX,
+    TAILSCALE_STATUS_COMMAND,
 )
 
 logger = logging.getLogger(__name__)
+
+TAILSCALE_LABEL = "Tailscale"
+LAN_LABEL = "Same Wi-Fi"
+LOOPBACK_LABEL = "This computer only"
+LOOPBACK_IP = "127.0.0.1"
 
 
 def _run_command(cmd: list[str], timeout: int = 2) -> Optional[str]:
@@ -38,7 +51,7 @@ def _run_command(cmd: list[str], timeout: int = 2) -> Optional[str]:
         return None
 
 
-def _parse_tailscale_ip_from_output(output: str) -> Optional[str]:
+def _parse_tailscale_ip_from_output(output: Optional[str]) -> Optional[str]:
     """First 100.x IPv4 address in an interface dump, or None.
 
     Token-based on purpose: `ip addr` and `ifconfig` print
@@ -64,49 +77,105 @@ def _parse_tailscale_ip_from_output(output: str) -> Optional[str]:
     return None
 
 
-def get_tailscale_ip() -> str:
-    """Detect Tailscale IP address with multiple fallback strategies.
+def _tailscale_backend_state() -> Optional[str]:
+    """BackendState from ``tailscale status --json``, or None if unavailable."""
+    output = _run_command(TAILSCALE_STATUS_COMMAND, timeout=3)
+    if not output:
+        return None
+    try:
+        data = json.loads(output)
+    except (json.JSONDecodeError, TypeError) as e:
+        logger.debug("Tailscale status was not JSON: %s", e)
+        return None
+    state = data.get("BackendState") if isinstance(data, dict) else None
+    return str(state) if state else None
 
-    Detection order:
-    1. tailscale CLI command
-    2. Parse network interfaces for 100.x.x.x range
-    3. Local IP via UDP socket
-    4. Loopback as last resort
 
-    Returns:
-        Detected IP address string.
-    """
-    # Method 1: Tailscale CLI — `tailscale ip -4` prints a BARE IP (no
-    # "inet" token), so the interface parser never matched it and this
-    # method was silently dead. Validate directly (and strip any CIDR).
+def is_tailscale_running() -> bool:
+    """True only when the Tailscale backend reports itself Running."""
+    return _tailscale_backend_state() == "Running"
+
+
+def _tailscale_ip() -> Optional[str]:
+    """Live Tailscale IPv4: CLI first, then interface dumps as fallback."""
     out = (_run_command(TAILSCALE_CLI_COMMAND) or "").strip()
     if out:
         ip = out.splitlines()[0].strip().split("/")[0]
         if is_valid_ip(ip):
-            logger.debug("Tailscale IP detected via CLI: %s", ip)
             return ip
 
-    # Method 2: Parse network interfaces
     for cmd in NETWORK_COMMANDS:
-        output = _run_command(cmd)
-        if ip := _parse_tailscale_ip_from_output(output):
-            logger.debug("Tailscale IP detected via %s: %s", cmd[0], ip)
+        if ip := _parse_tailscale_ip_from_output(_run_command(cmd)):
             return ip
+    return None
 
-    # Method 3: UDP socket trick to get local IP
+
+def _lan_ip() -> Optional[str]:
+    """Default-route IPv4 via a UDP connect (no packet is sent).
+
+    This is the address a phone on the same Wi-Fi/gateway can reach, and it is
+    the address macOS ``ipconfig getifaddr en0`` reports on this host.
+    """
     try:
         with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as s:
             s.settimeout(1.0)
             s.connect(("8.8.8.8", 1))
-            local_ip = s.getsockname()[0]
-            logger.debug("Local IP detected via UDP: %s", local_ip)
-            return local_ip
+            ip = s.getsockname()[0]
     except (OSError, socket.error) as e:
-        logger.debug("UDP socket detection failed: %s", e)
+        logger.debug("LAN IP detection failed: %s", e)
+        return None
+    if not ip or not is_valid_ip(ip) or ip.startswith("127."):
+        return None
+    return ip
 
-    # Method 4: Fallback
-    logger.warning("Could not detect IP address, using loopback")
-    return "127.0.0.1"
+
+def get_ip_candidates() -> list[dict]:
+    """Reachable connection candidates, deterministic primary first.
+
+    Returns:
+        ``[{"ip": str, "kind": "tailscale"|"lan"|"loopback", "label": str}]``.
+        Tailscale is included only when its backend is Running; the LAN address
+        is always offered; loopback is a last resort with a warning.
+    """
+    candidates: list[dict] = []
+
+    state = _tailscale_backend_state()
+    ts_ip: Optional[str] = None
+    if state == "Running":
+        ts_ip = _tailscale_ip()
+        if ts_ip:
+            candidates.append({
+                "ip": ts_ip, "kind": "tailscale", "label": TAILSCALE_LABEL,
+            })
+        else:
+            logger.debug("Tailscale is Running but no IPv4 was detected")
+    elif state:
+        logger.debug("Tailscale backend is %s — its IP is not advertised", state)
+
+    lan_ip = _lan_ip()
+    if lan_ip and lan_ip != ts_ip:
+        candidates.append({
+            "ip": lan_ip, "kind": "lan", "label": LAN_LABEL,
+        })
+
+    if not candidates:
+        logger.warning(
+            "No routable IP detected; falling back to loopback — a phone cannot connect"
+        )
+        candidates.append({
+            "ip": LOOPBACK_IP, "kind": "loopback", "label": LOOPBACK_LABEL,
+        })
+
+    return candidates
+
+
+def get_tailscale_ip() -> str:
+    """Legacy single-IP helper: the primary candidate's address.
+
+    Kept so existing callers keep working; new code should use
+    ``get_ip_candidates()`` so a stopped Tailscale address is never advertised.
+    """
+    return get_ip_candidates()[0]["ip"]
 
 
 def is_valid_ip(ip: str) -> bool:

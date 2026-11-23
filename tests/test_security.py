@@ -16,7 +16,7 @@ import types
 
 import pytest
 from aiohttp import web
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 from hermes_mobile_plugin import audio_routes
 from hermes_mobile_plugin.audio import AudioBackendError
@@ -97,12 +97,29 @@ async def test_oversized_json_body_is_413():
     assert ei.value.status == 413
 
 
-def test_tailscale_cli_bare_ip_is_parsed():
-    """`tailscale ip -4` prints a bare IP (no "inet" token). The old parser
-    matched only interface output, so method 1 never returned."""
+def test_tailscale_cli_bare_ip_is_parsed_only_when_running():
+    """`tailscale ip -4` prints a bare IP, but it keeps printing it while the
+    daemon is stopped — the Running backend state is the gate."""
     from hermes_mobile_plugin.ip_detector import get_tailscale_ip
 
-    with patch("hermes_mobile_plugin.ip_detector._run_command",
-               return_value="100.89.25.56\n") as m:
+    with patch(
+        "hermes_mobile_plugin.ip_detector._run_command",
+        side_effect=['{"BackendState": "Running"}', "100.89.25.56\n"],
+    ):
         assert get_tailscale_ip() == "100.89.25.56"
-    m.assert_called_once()  # CLI hit resolved it; no interface fallback ran
+
+
+def test_stopped_tailscale_bare_ip_is_ignored():
+    """Regression: a stopped daemon still answers `ip -4` with a dead 100.x."""
+    from hermes_mobile_plugin.ip_detector import get_tailscale_ip
+
+    sock = MagicMock()
+    sock.getsockname.return_value = ("192.168.1.3",)
+    manager = MagicMock()
+    manager.__enter__ = MagicMock(return_value=sock)
+    manager.__exit__ = MagicMock(return_value=False)
+    with patch(
+        "hermes_mobile_plugin.ip_detector._run_command",
+        side_effect=['{"BackendState": "Stopped"}', "100.89.25.56\n"],
+    ), patch("socket.socket", return_value=manager):
+        assert get_tailscale_ip() == "192.168.1.3"

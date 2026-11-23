@@ -613,7 +613,7 @@ class TestInstallRestart:
         monkeypatch.setattr(envdetect, "ensure_runtime_venv", lambda: "   ok")
         monkeypatch.setattr(cli, "enable_plugin", lambda: (True, "enabled"))
         monkeypatch.setattr(cli, "generate_qr", fake_qr)
-        monkeypatch.setattr(cli, "print_connection_details", lambda config: None)
+        monkeypatch.setattr(cli, "print_connection_details", lambda config, ip_override=None: None)
         monkeypatch.setattr(cli, "resolve_gateway_port", lambda: 8642)
         monkeypatch.setattr(cli, "_gateway_health", lambda port: True)
         monkeypatch.setattr(cli, "gateway_pid", lambda: 4242)
@@ -704,6 +704,46 @@ class TestInstallRestart:
 
         assert cli.cmd_install(argparse.Namespace()) == 0
         assert opened == []
+
+    def test_ip_override_reaches_page_and_summary(self, monkeypatch):
+        """Round 14: `install --ip` must drive both the QR and the printed URL."""
+        from hermes_mobile_plugin import cli
+
+        page_calls = []
+        summaries = []
+
+        async def fake_qr(*args, **kwargs):
+            page_calls.append(kwargs)
+            return "qr.html"
+
+        self._patch(monkeypatch, seeded=False)
+        monkeypatch.setattr(cli, "generate_qr", fake_qr)
+        monkeypatch.setattr(cli, "print_connection_details",
+                            lambda config, ip_override=None: summaries.append(ip_override))
+
+        assert cli.cmd_install(argparse.Namespace(ip="10.0.0.9")) == 0
+        assert all(c["ip_override"] == "10.0.0.9" for c in page_calls)
+        assert summaries == ["10.0.0.9"]
+
+    def test_qr_ip_override_reaches_page_and_summary(self, monkeypatch, tmp_path):
+        from hermes_mobile_plugin import cli, qr_generator
+
+        page_calls = []
+        summaries = []
+
+        async def fake_qr(*args, **kwargs):
+            page_calls.append(kwargs)
+            return tmp_path / "qr_code.html"
+
+        monkeypatch.setattr(cli, "load_hermes_config", lambda: {})
+        monkeypatch.setattr(qr_generator, "generate_qr", fake_qr)
+        monkeypatch.setattr(cli, "print_connection_details",
+                            lambda config, ip_override=None: summaries.append(ip_override))
+
+        assert cli.cmd_qr(argparse.Namespace(
+            ip="10.0.0.9", output=None, no_browser=True)) == 0
+        assert page_calls[0]["ip_override"] == "10.0.0.9"
+        assert summaries == ["10.0.0.9"]
 
     def test_changed_run_waits_for_the_old_gateway_to_exit_first(self, monkeypatch, capsys):
         """Ordering is the fix: a draining gateway still answers /health and

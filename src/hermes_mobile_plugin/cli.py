@@ -154,9 +154,12 @@ def cmd_install(args: argparse.Namespace) -> int:
     # Step 6: Generate QR code (with the now-guaranteed key baked in)
     print("📷 Step 6/6: Generating QR code...")
     qr_path = None
+    ip_override = getattr(args, "ip", None)
     try:
         import asyncio
-        output_path = asyncio.run(generate_qr(config, open_browser=False, save_file=True))
+        output_path = asyncio.run(generate_qr(
+            config, open_browser=False, save_file=True, ip_override=ip_override
+        ))
         qr_path = Path(output_path)
         print(f"   ✅ QR code generated: {output_path}")
     except Exception as e:
@@ -244,7 +247,9 @@ def cmd_install(args: argparse.Namespace) -> int:
         try:
             import asyncio
             config = load_hermes_config()
-            output_path = asyncio.run(generate_qr(config, open_browser=False, save_file=True))
+            output_path = asyncio.run(generate_qr(
+                config, open_browser=False, save_file=True, ip_override=ip_override
+            ))
             qr_path = Path(output_path)
             print(f"   ✅ QR code generated: {output_path}")
         except Exception as e:
@@ -283,7 +288,7 @@ def cmd_install(args: argparse.Namespace) -> int:
     print("   4. Scan the QR from your browser")
     print()
     print(f"🔗 Connection details (port {port}):")
-    print_connection_details(config)
+    print_connection_details(config, ip_override=ip_override)
     print()
     print("📊 Management commands:")
     print("   hermes-mobile-plugin qr          # show the pairing QR again")
@@ -329,7 +334,7 @@ def cmd_qr(args: argparse.Namespace) -> int:
             ip_override=args.ip,
         ))
 
-        print_connection_details(config)
+        print_connection_details(config, ip_override=args.ip)
         return 0
 
     except Exception as e:
@@ -731,6 +736,10 @@ Examples:
         "--no-browser",
         action="store_true",
         help="Don't open the QR page automatically",
+    )
+    install_parser.add_argument(
+        "--ip",
+        help="Override IP address in the QR page and connection summary",
     )
 
     # QR command

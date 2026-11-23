@@ -1,9 +1,11 @@
 """Tests for Hermes Mobile Plugin IP detector module."""
 
 from unittest.mock import patch, MagicMock
+import json
 import subprocess
 
 from hermes_mobile_plugin.ip_detector import (
+    get_ip_candidates,
     get_tailscale_ip,
     is_valid_ip,
     _run_command,
@@ -123,6 +125,75 @@ class TestGetTailscaleIP:
                 result = get_tailscale_ip()
                 
                 assert result == "127.0.0.1"
+
+
+class TestGetIPCandidates:
+    """Stopped Tailscale must never produce a 100.x pairing candidate."""
+
+    @staticmethod
+    def _status(state: str) -> str:
+        return json.dumps({
+            "BackendState": state,
+            "Self": {"TailscaleIPs": ["100.116.192.1"]},
+        })
+
+    @staticmethod
+    def _lan_socket(ip: str = "192.168.1.3"):
+        sock = MagicMock()
+        sock.getsockname.return_value = (ip,)
+        manager = MagicMock()
+        manager.__enter__ = MagicMock(return_value=sock)
+        manager.__exit__ = MagicMock(return_value=False)
+        return manager
+
+    def test_stopped_tailscale_uses_lan_and_no_100x(self):
+        """The live defect: `ip -4` lies, LAN must be the primary."""
+        with patch(
+            "hermes_mobile_plugin.ip_detector._run_command",
+            side_effect=[self._status("Stopped"), "100.116.192.1\n"],
+        ), patch("socket.socket", return_value=self._lan_socket()):
+            candidates = get_ip_candidates()
+
+        assert candidates == [{
+            "ip": "192.168.1.3", "kind": "lan", "label": "Same Wi-Fi",
+        }]
+        assert "100." not in str(candidates)
+
+    def test_running_tailscale_primary_with_lan_alternate(self):
+        with patch(
+            "hermes_mobile_plugin.ip_detector._run_command",
+            side_effect=[self._status("Running"), "100.116.192.1\n"],
+        ), patch("socket.socket", return_value=self._lan_socket()):
+            candidates = get_ip_candidates()
+
+        assert [c["kind"] for c in candidates] == ["tailscale", "lan"]
+        assert candidates[0]["ip"] == "100.116.192.1"
+        assert candidates[1]["ip"] == "192.168.1.3"
+        assert candidates[0]["label"] == "Tailscale"
+        assert candidates[1]["label"] == "Same Wi-Fi"
+
+    def test_no_lan_falls_back_to_loopback_with_warning(self, caplog):
+        with patch(
+            "hermes_mobile_plugin.ip_detector._run_command",
+            return_value=self._status("Stopped"),
+        ), patch("socket.socket", side_effect=OSError("no route")):
+            with caplog.at_level("WARNING"):
+                candidates = get_ip_candidates()
+
+        assert candidates == [{
+            "ip": "127.0.0.1", "kind": "loopback", "label": "This computer only",
+        }]
+        assert any("loopback" in r.message.lower() for r in caplog.records)
+
+    def test_unreadable_status_does_not_trust_tailscale_ip(self):
+        """A CLI that prints the IP as its status output is not proof of life."""
+        with patch(
+            "hermes_mobile_plugin.ip_detector._run_command",
+            return_value="100.116.192.1\n",
+        ), patch("socket.socket", return_value=self._lan_socket()):
+            candidates = get_ip_candidates()
+
+        assert [c["kind"] for c in candidates] == ["lan"]
 
 
 class TestIsValidIP:
