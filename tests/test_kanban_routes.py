@@ -180,6 +180,43 @@ async def test_delete_action(home):
 
 
 @pytest.mark.asyncio
+async def test_delete_linked_subtask_removes_link(home):
+    """Deleting a child card must also clear the parent's child list and
+    progress, otherwise the board keeps showing a phantom subtask."""
+    client = await _start(home)
+    try:
+        parent = await _create(client, title="Parent with child", triage=True)
+        child = await _create(client, title="Subtask to delete", triage=True)
+        import sys
+        sys.path.insert(0, str(AGENT_ROOT))
+        from hermes_cli import kanban_db as kb
+        from hermes_cli import kanban_db_connect
+        conn = kanban_db_connect.connect()
+        try:
+            kb.link_tasks(conn, parent["id"], child["id"])
+        finally:
+            conn.close()
+
+        resp = await client.post(
+            f"/api/mobile/kanban/tasks/{child['id']}/actions",
+            json={"action": "delete"}, headers=AUTH,
+        )
+        body = await resp.json()
+        assert body["ok"] is True
+        assert body["deleted"] is True
+
+        board = (await (await client.get(
+            "/api/mobile/kanban/board", headers=AUTH)).json())
+        parent_card = next(
+            t for c in board["columns"] for t in c["tasks"]
+            if t["id"] == parent["id"])
+        assert parent_card["children"] == []
+        assert parent_card["progress"] in (None, {"done": 0, "total": 0})
+    finally:
+        await client.close()
+
+
+@pytest.mark.asyncio
 async def test_board_includes_child_cards(home):
     client = await _start(home)
     try:
