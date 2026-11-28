@@ -108,6 +108,7 @@ def _wire_audio_routes(native: Any, adapter: Any) -> None:
             )
             from .audio_routes import register as _register_routes
             from .capabilities_routes import register as _register_capabilities_routes
+            from .kanban_routes import register as _register_kanban_routes
             from .commands_routes import register as _register_command_routes
             from .pair_routes import register as _register_pair_routes
             from .providers_routes import register as _register_providers_routes
@@ -136,6 +137,7 @@ def _wire_audio_routes(native: Any, adapter: Any) -> None:
             _register_pty_routes(native)
             _register_agent_profiles_routes(native)
             _register_capabilities_routes(native)
+            _register_kanban_routes(native)
             _register_pair_routes(native)
         except Exception:
             logger.exception("[hermes-mobile-plugin] Failed to register audio routes")

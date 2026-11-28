@@ -1,5 +1,39 @@
 # Hermes Mobile QR Plugin
 
+## 0.0.45 — Kanban bridge for the mobile app
+
+The agent's Kanban board only had a dashboard web-plugin API (FastAPI, served
+by the desktop web server on 9119) — the gateway `api_server` on 8642 returned
+404 for every `/api/plugins/kanban/*` route, so the phone could not see the
+board at all. This release adds a first-class mobile bridge over the SAME
+kernel (`hermes_cli.kanban_db`) instead of a second implementation.
+
+- `GET /api/mobile/kanban/mode` reports the agent-side mode (`kanban` in
+  `platform_toolsets.api_server` + `kanban.dispatch_in_gateway`), the effective
+  toolset list, boards, and whether a restart is pending.
+- `PUT /api/mobile/kanban/mode {enabled}` flips both settings in `config.yaml`
+  atomically (`save_config`) and returns `restart_required` when the dispatcher
+  flag changed — the gateway reads it once at boot, so the app tells the truth
+  instead of pretending the toggle took effect.
+- `GET /api/mobile/kanban/board` returns the workflow columns
+  (triage/todo/scheduled/ready/running/blocked/review/done) with per-task
+  summary, block kind, comment count, child progress and latest event id;
+  `GET /boards` and `GET /assignees` back the board/assignee pickers.
+- `POST /tasks` creates a task from the phone (title + description + assignee,
+  optionally triage), `GET /tasks/{id}` returns the card with comments, events
+  and runs, `POST /tasks/{id}/comments` lets the user answer a worker, and
+  `POST /tasks/{id}/actions` applies unblock / retry / approve / archive /
+  reassign through the kernel's own verbs.
+- `GET /api/mobile/kanban/events?since=` is a cursor feed over `task_events`
+  (blocked, review_requested, block_loop_detected, gave_up, crashed,
+  timed_out, completed) that the app's watcher service polls for local
+  notifications.
+- Blocking SQLite work runs in threads (30 s deadline); an agent without the
+  kanban kernel answers 501 with a stable error so the app can hide the
+  feature instead of crashing.
+- 7 new route tests (auth, board shape, create/detail/comment/events/archive,
+  mode round-trip incl. `restart_required`, and the 501 degraded path).
+
 ## 0.0.44 — live loopback-only pairing page (`GET /pair`)
 
 Round 15 — pairing CX hardening, small and safe.

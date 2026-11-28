@@ -128,6 +128,8 @@ Mounted on the api_server platform; the mobile app is the client.
 | `GET /api/mobile/skills` | installed-skill manifest (Settings panel fallback) |
 | `GET /api/mobile/context-usage` · `GET /api/mobile/context-window` | context meter |
 | `GET /api/mobile/update/check` · `POST /update/apply` · `GET /update/version` | server self-update |
+| `GET /api/mobile/kanban/board` · `/mode` · `/boards` · `/assignees` | Kanban board state; `PUT /mode` toggles the agent-side Kanban mode |
+| `POST /api/mobile/kanban/tasks` · `GET /tasks/{id}` · `POST /tasks/{id}/comments` · `POST /tasks/{id}/actions` · `GET /events` | create/track/comment/act on board tasks; `/events` is the notification cursor |
 | `GET /api/system/status` · `POST /api/system/awake` | host status, keep-awake |
 | `POST /api/diag/log` · `GET /api/audio/health` | crash reports, liveness |
 
